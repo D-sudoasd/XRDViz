@@ -166,6 +166,80 @@ class RendererTests(unittest.TestCase):
         self.assertTrue(all(text.get_position()[0] < 0.0 for text in phase_texts))
         self.assertTrue(all(not text.get_clip_on() for text in phase_texts))
 
+    def test_gradient_stack_applies_show_every_n_and_colorbar(self):
+        from xrdviz.plot.renderer import render_project
+
+        state = ProjectState(
+            spectra=[
+                SpectrumLayer(
+                    name=f"f{index}",
+                    x=[10.0, 20.0, 30.0],
+                    y=[1.0, 10.0 + index, 2.0],
+                    frame_index=index,
+                    color_value=float(index),
+                    order=index,
+                )
+                for index in range(5)
+            ],
+            settings=PlotSettings(
+                view_mode="gradient_stack",
+                color_by="frame",
+                colormap="viridis",
+                show_colorbar=True,
+                show_every_n=2,
+                stack_spacing=0.2,
+                show_legend=False,
+            ),
+        )
+
+        fig, axes = render_project(state)
+
+        self.assertIn("colorbar", axes)
+        self.assertGreater(len(fig.axes), 1)
+        self.assertEqual(len(axes["main"].lines), 3)
+
+    def test_heatmap_view_renders_image_with_colorbar(self):
+        from xrdviz.plot.renderer import render_project
+
+        state = ProjectState(
+            spectra=[
+                SpectrumLayer(name="f1", x=[10.0, 20.0, 30.0], y=[1.0, 3.0, 2.0], frame_index=1, order=0),
+                SpectrumLayer(name="f2", x=[10.0, 20.0, 30.0], y=[2.0, 4.0, 1.0], frame_index=2, order=1),
+            ],
+            settings=PlotSettings(view_mode="heatmap", heatmap_points=16, show_colorbar=True, x_min=10.0, x_max=30.0),
+        )
+
+        _fig, axes = render_project(state)
+
+        self.assertIn("heatmap", axes)
+        self.assertIn("colorbar", axes)
+        self.assertEqual(axes["heatmap"].get_array().shape, (2, 16))
+
+    def test_heatmap_uses_ordinal_rows_for_irregular_metadata_values(self):
+        from xrdviz.plot.renderer import render_project
+
+        state = ProjectState(
+            spectra=[
+                SpectrumLayer(name="t0", x=[10.0, 20.0, 30.0], y=[1.0, 3.0, 2.0], time_s=0.0, order=0),
+                SpectrumLayer(name="t10", x=[10.0, 20.0, 30.0], y=[2.0, 4.0, 1.0], time_s=10.0, order=1),
+                SpectrumLayer(name="t60", x=[10.0, 20.0, 30.0], y=[1.0, 2.0, 5.0], time_s=60.0, order=2),
+            ],
+            settings=PlotSettings(
+                view_mode="heatmap",
+                sort_by="time",
+                color_by="time",
+                heatmap_points=16,
+                show_y_tick_labels=True,
+                x_min=10.0,
+                x_max=30.0,
+            ),
+        )
+
+        _fig, axes = render_project(state)
+
+        self.assertEqual(tuple(round(value, 3) for value in axes["main"].get_ylim()), (-0.5, 2.5))
+        self.assertEqual([tick.get_text() for tick in axes["main"].get_yticklabels()], ["0", "10", "60"])
+
 
 def _has_visible_tick_text(labels):
     return any(label.get_visible() and label.get_text() for label in labels)

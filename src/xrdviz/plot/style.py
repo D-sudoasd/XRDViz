@@ -6,6 +6,8 @@ from xrdviz.models import PLOT_AXIS_COLOR, PLOT_TEXT_COLOR, PUBLICATION_PALETTE,
 
 NATURE_SINGLE_WIDTH_IN = 89.0 / 25.4
 NATURE_DOUBLE_WIDTH_IN = 183.0 / 25.4
+SCIENCE_SINGLE_WIDTH_IN = 55.0 / 25.4
+SCIENCE_DOUBLE_WIDTH_IN = 175.0 / 25.4
 
 
 def nature_single_column(settings: PlotSettings | None = None) -> PlotSettings:
@@ -21,6 +23,11 @@ def nature_single_column(settings: PlotSettings | None = None) -> PlotSettings:
         tick_label_size=6.0,
         line_width=0.75,
         bragg_band_height=0.16,
+        template_name="nature_single",
+        margin_left=0.16,
+        margin_right=0.98,
+        margin_top=0.96,
+        margin_bottom=0.16,
     )
 
 
@@ -37,7 +44,67 @@ def nature_double_column(settings: PlotSettings | None = None) -> PlotSettings:
         tick_label_size=6.0,
         line_width=0.75,
         bragg_band_height=0.16,
+        template_name="nature_double",
+        margin_left=0.12,
+        margin_right=0.98,
+        margin_top=0.96,
+        margin_bottom=0.14,
     )
+
+
+def science_single_column(settings: PlotSettings | None = None) -> PlotSettings:
+    base = settings or PlotSettings()
+    return replace(
+        base,
+        figure_width_in=SCIENCE_SINGLE_WIDTH_IN,
+        figure_height_in=2.05,
+        dpi=600,
+        font_family="Arial",
+        font_size=6.5,
+        axis_label_size=7.0,
+        tick_label_size=6.0,
+        line_width=0.7,
+        bragg_band_height=0.16,
+        template_name="science_single",
+        margin_left=0.18,
+        margin_right=0.98,
+        margin_top=0.96,
+        margin_bottom=0.18,
+    )
+
+
+def science_double_column(settings: PlotSettings | None = None) -> PlotSettings:
+    base = settings or PlotSettings()
+    return replace(
+        base,
+        figure_width_in=SCIENCE_DOUBLE_WIDTH_IN,
+        figure_height_in=3.0,
+        dpi=600,
+        font_family="Arial",
+        font_size=6.5,
+        axis_label_size=7.0,
+        tick_label_size=6.0,
+        line_width=0.7,
+        bragg_band_height=0.16,
+        template_name="science_double",
+        margin_left=0.12,
+        margin_right=0.98,
+        margin_top=0.96,
+        margin_bottom=0.14,
+    )
+
+
+def apply_publication_preset(settings: PlotSettings | None, preset: str) -> PlotSettings:
+    if preset == "nature_single" or preset == "single":
+        return nature_single_column(settings)
+    if preset == "nature_double" or preset == "double":
+        return nature_double_column(settings)
+    if preset == "science_single":
+        return science_single_column(settings)
+    if preset == "science_double":
+        return science_double_column(settings)
+    base = settings or PlotSettings()
+    return replace(base, template_name="custom")
 
 
 def apply_matplotlib_style(settings: PlotSettings) -> None:

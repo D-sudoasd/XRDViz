@@ -30,6 +30,21 @@ class NatureStyleTests(unittest.TestCase):
         self.assertNotEqual(PLOT_AXIS_COLOR, "#000000")
         self.assertNotEqual(PLOT_TEXT_COLOR, "#000000")
 
+    def test_science_templates_and_named_preset_application(self):
+        from xrdviz.plot.style import SCIENCE_SINGLE_WIDTH_IN, apply_publication_preset, science_single_column
+
+        settings = science_single_column(PlotSettings(figure_height_in=4.0))
+
+        self.assertAlmostEqual(settings.figure_width_in, 55.0 / 25.4)
+        self.assertEqual(settings.figure_width_in, SCIENCE_SINGLE_WIDTH_IN)
+        self.assertEqual(settings.template_name, "science_single")
+        self.assertLessEqual(settings.font_size, 7.0)
+
+        applied = apply_publication_preset(PlotSettings(panel_title="Keep title"), "science_double")
+        self.assertEqual(applied.template_name, "science_double")
+        self.assertEqual(applied.panel_title, "Keep title")
+        self.assertAlmostEqual(applied.figure_width_in, 175.0 / 25.4)
+
 
 if __name__ == "__main__":
     unittest.main()

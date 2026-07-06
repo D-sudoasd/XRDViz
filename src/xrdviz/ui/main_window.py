@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from xrdviz.calibration import auto_calibrate_phases
+from xrdviz.batch import apply_batch_metadata
 from xrdviz.cif import load_cif_phase
 from xrdviz.io import (
     apply_sample_metadata,
@@ -45,7 +46,7 @@ from xrdviz.io import (
 )
 from xrdviz.models import OKABE_ITO, PlotSettings, ProjectState, default_axis_label
 from xrdviz.plot.renderer import export_project, render_project
-from xrdviz.plot.style import nature_double_column, nature_single_column
+from xrdviz.plot.style import apply_publication_preset
 from xrdviz.publication import export_publication_bundle, make_peak_table_rows
 from xrdviz.project import load_project, save_project
 
@@ -171,6 +172,7 @@ class MainWindow(QMainWindow):
     def _properties_panel(self) -> QWidget:
         tabs = QTabWidget()
         tabs.addTab(self._plot_properties_tab(), "Plot")
+        tabs.addTab(self._batch_properties_tab(), "Batch")
         tabs.addTab(self._reference_peaks_tab(), "Reference Peaks")
         return tabs
 
@@ -235,11 +237,33 @@ class MainWindow(QMainWindow):
         self.direct_labels_check = QCheckBox("Direct curve labels")
         self.phase_legend_check = QCheckBox("Show phase legend")
         self.y_tick_labels_check = QCheckBox("Show y tick labels")
+        self.legend_location_combo = _field_combo(
+            [
+                ("Upper right", "upper right"),
+                ("Upper left", "upper left"),
+                ("Lower right", "lower right"),
+                ("Lower left", "lower left"),
+                ("Best", "best"),
+                ("Outside right", "outside right"),
+                ("None", "none"),
+            ]
+        )
+        self.template_combo = _field_combo(
+            [
+                ("Nature single", "nature_single"),
+                ("Nature double", "nature_double"),
+                ("Science single", "science_single"),
+                ("Science double", "science_double"),
+                ("Custom", "custom"),
+            ]
+        )
         form.addRow("Font size", self.font_size_spin)
         form.addRow("Axis label size", self.axis_label_size_spin)
         form.addRow("Tick label size", self.tick_label_size_spin)
         form.addRow("Line width", self.line_width_spin)
         form.addRow("Bragg band height", self.bragg_height_spin)
+        form.addRow("Legend position", self.legend_location_combo)
+        form.addRow("Template", self.template_combo)
         form.addRow(self.legend_check)
         form.addRow(self.direct_labels_check)
         form.addRow(self.phase_legend_check)
@@ -248,10 +272,16 @@ class MainWindow(QMainWindow):
         preset_bar = QHBoxLayout()
         single = QPushButton("Nature single")
         double = QPushButton("Nature double")
-        single.clicked.connect(lambda: self.apply_preset("single"))
-        double.clicked.connect(lambda: self.apply_preset("double"))
+        science_single = QPushButton("Science single")
+        science_double = QPushButton("Science double")
+        single.clicked.connect(lambda: self.apply_preset("nature_single"))
+        double.clicked.connect(lambda: self.apply_preset("nature_double"))
+        science_single.clicked.connect(lambda: self.apply_preset("science_single"))
+        science_double.clicked.connect(lambda: self.apply_preset("science_double"))
         preset_bar.addWidget(single)
         preset_bar.addWidget(double)
+        preset_bar.addWidget(science_single)
+        preset_bar.addWidget(science_double)
         form.addRow(preset_bar)
 
         refresh = QPushButton("Refresh plot")
@@ -262,6 +292,69 @@ class MainWindow(QMainWindow):
         divider.setFrameShape(QFrame.HLine)
         form.addRow(divider)
         form.addRow(QLabel("Tip: drag spectra or CIF files into the window."))
+
+        scroll.setWidget(container)
+        return scroll
+
+    def _batch_properties_tab(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        form = QFormLayout(container)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        self.view_mode_combo = _field_combo(
+            [
+                ("Overlay", "overlay"),
+                ("Stack", "stack"),
+                ("Gradient stack", "gradient_stack"),
+                ("Heatmap", "heatmap"),
+            ]
+        )
+        self.sort_by_combo = _field_combo(
+            [
+                ("Frame", "frame"),
+                ("Time", "time"),
+                ("Temperature", "temperature"),
+                ("Order", "order"),
+            ]
+        )
+        self.color_by_combo = _field_combo(
+            [
+                ("Frame", "frame"),
+                ("Time", "time"),
+                ("Temperature", "temperature"),
+                ("Order", "order"),
+            ]
+        )
+        self.colormap_combo = _field_combo(
+            [
+                ("Blue rose", "blue_rose"),
+                ("Viridis", "viridis"),
+                ("Plasma", "plasma"),
+                ("Magma", "magma"),
+                ("Cividis", "cividis"),
+                ("Turbo", "turbo"),
+            ]
+        )
+        self.show_colorbar_check = QCheckBox("Show colorbar")
+        self.show_every_n_spin = QSpinBox()
+        self.show_every_n_spin.setRange(1, 1000)
+        self.heatmap_points_spin = QSpinBox()
+        self.heatmap_points_spin.setRange(16, 10000)
+        self.heatmap_points_spin.setSingleStep(64)
+
+        form.addRow("View mode", self.view_mode_combo)
+        form.addRow("Sort by", self.sort_by_combo)
+        form.addRow("Color by", self.color_by_combo)
+        form.addRow("Colormap", self.colormap_combo)
+        form.addRow(self.show_colorbar_check)
+        form.addRow("Show every N", self.show_every_n_spin)
+        form.addRow("Heatmap points", self.heatmap_points_spin)
+
+        apply_button = QPushButton("Apply metadata and sort")
+        apply_button.clicked.connect(self.apply_batch_metadata_to_layers)
+        form.addRow(apply_button)
 
         scroll.setWidget(container)
         return scroll
@@ -315,16 +408,31 @@ class MainWindow(QMainWindow):
             self.tick_label_size_spin,
             self.line_width_spin,
             self.bragg_height_spin,
+            self.legend_location_combo,
+            self.template_combo,
             self.legend_check,
             self.direct_labels_check,
             self.phase_legend_check,
             self.y_tick_labels_check,
+            self.view_mode_combo,
+            self.sort_by_combo,
+            self.color_by_combo,
+            self.colormap_combo,
+            self.show_colorbar_check,
+            self.show_every_n_spin,
+            self.heatmap_points_spin,
         ]
         for control in controls:
             if isinstance(control, QLineEdit):
                 control.editingFinished.connect(self.render)
-            elif isinstance(control, QComboBox):
+            elif control is self.x_axis_combo:
                 control.currentIndexChanged.connect(lambda *_args: self._axis_changed())
+            elif control is self.template_combo:
+                control.currentIndexChanged.connect(lambda *_args: self._template_changed())
+            elif control in (self.sort_by_combo, self.color_by_combo, self.colormap_combo):
+                control.currentIndexChanged.connect(lambda *_args: self._batch_controls_changed())
+            elif isinstance(control, QComboBox):
+                control.currentIndexChanged.connect(lambda *_args: self.render())
             elif isinstance(control, (QCheckBox, QSpinBox, QDoubleSpinBox)):
                 signal = control.stateChanged if isinstance(control, QCheckBox) else control.valueChanged
                 signal.connect(lambda *_args: self.render())
@@ -334,6 +442,19 @@ class MainWindow(QMainWindow):
         axis_kind = self.x_axis_combo.currentData()
         self.x_label_edit.setText(default_axis_label(axis_kind))
         self.render()
+
+    def _template_changed(self) -> None:
+        preset = self.template_combo.currentData()
+        if preset and preset != "custom":
+            self.apply_preset(preset)
+        else:
+            self.render()
+
+    def _batch_controls_changed(self) -> None:
+        if self.state.spectra:
+            self.apply_batch_metadata_to_layers()
+        else:
+            self.render()
 
     def open_spectra(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -367,6 +488,11 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - surfaced to user
             QMessageBox.warning(self, "Sample metadata import failed", str(exc))
             return
+        self.refresh_layers()
+        self.render()
+
+    def apply_batch_metadata_to_layers(self) -> None:
+        self._apply_batch_metadata_to_state()
         self.refresh_layers()
         self.render()
 
@@ -477,7 +603,7 @@ class MainWindow(QMainWindow):
 
     def apply_preset(self, preset: str) -> None:
         settings = self._settings_from_controls()
-        self.state.settings = nature_single_column(settings) if preset == "single" else nature_double_column(settings)
+        self.state.settings = apply_publication_preset(settings, preset)
         self._sync_controls_from_settings()
         self.render()
 
@@ -660,6 +786,16 @@ class MainWindow(QMainWindow):
                 self.state.spectra.append(load_spectrum(path, axis_kind=axis_kind, color=color))
             except Exception as exc:  # noqa: BLE001 - surfaced to user
                 QMessageBox.warning(self, "Spectrum import failed", f"{path.name}: {exc}")
+        if paths:
+            self._apply_batch_metadata_to_state()
+
+    def _apply_batch_metadata_to_state(self) -> None:
+        if not self.state.spectra:
+            return
+        sort_by = self.sort_by_combo.currentData() if hasattr(self, "sort_by_combo") else "frame"
+        color_by = self.color_by_combo.currentData() if hasattr(self, "color_by_combo") else "frame"
+        colormap = self.colormap_combo.currentData() if hasattr(self, "colormap_combo") else "blue_rose"
+        apply_batch_metadata(self.state.spectra, sort_by=sort_by, color_by=color_by, colormap=colormap)
 
     def _add_cifs(self, paths: list[Path]) -> None:
         settings = self._settings_from_controls()
@@ -695,6 +831,15 @@ class MainWindow(QMainWindow):
             direct_labels=self.direct_labels_check.isChecked(),
             show_phase_legend=self.phase_legend_check.isChecked(),
             show_y_tick_labels=self.y_tick_labels_check.isChecked(),
+            view_mode=self.view_mode_combo.currentData(),
+            sort_by=self.sort_by_combo.currentData(),
+            color_by=self.color_by_combo.currentData(),
+            colormap=self.colormap_combo.currentData(),
+            show_colorbar=self.show_colorbar_check.isChecked(),
+            show_every_n=self.show_every_n_spin.value(),
+            heatmap_points=self.heatmap_points_spin.value(),
+            legend_location=self.legend_location_combo.currentData(),
+            template_name=self.template_combo.currentData(),
         )
 
     def _sync_controls_from_settings(self) -> None:
@@ -719,10 +864,19 @@ class MainWindow(QMainWindow):
             (self.tick_label_size_spin, lambda: self.tick_label_size_spin.setValue(settings.tick_label_size)),
             (self.line_width_spin, lambda: self.line_width_spin.setValue(settings.line_width)),
             (self.bragg_height_spin, lambda: self.bragg_height_spin.setValue(settings.bragg_band_height)),
+            (self.legend_location_combo, lambda: _set_combo_data(self.legend_location_combo, settings.legend_location)),
+            (self.template_combo, lambda: _set_combo_data(self.template_combo, settings.template_name)),
             (self.legend_check, lambda: self.legend_check.setChecked(settings.show_legend)),
             (self.direct_labels_check, lambda: self.direct_labels_check.setChecked(settings.direct_labels)),
             (self.phase_legend_check, lambda: self.phase_legend_check.setChecked(settings.show_phase_legend)),
             (self.y_tick_labels_check, lambda: self.y_tick_labels_check.setChecked(settings.show_y_tick_labels)),
+            (self.view_mode_combo, lambda: _set_combo_data(self.view_mode_combo, settings.view_mode)),
+            (self.sort_by_combo, lambda: _set_combo_data(self.sort_by_combo, settings.sort_by)),
+            (self.color_by_combo, lambda: _set_combo_data(self.color_by_combo, settings.color_by)),
+            (self.colormap_combo, lambda: _set_combo_data(self.colormap_combo, settings.colormap)),
+            (self.show_colorbar_check, lambda: self.show_colorbar_check.setChecked(settings.show_colorbar)),
+            (self.show_every_n_spin, lambda: self.show_every_n_spin.setValue(settings.show_every_n)),
+            (self.heatmap_points_spin, lambda: self.heatmap_points_spin.setValue(settings.heatmap_points)),
         ]
         for widget, setter in setters:
             was_blocked = widget.blockSignals(True)
@@ -737,6 +891,13 @@ def _axis_combo(*, include_auto: bool = False) -> QComboBox:
     combo.addItem("2theta", "two_theta")
     combo.addItem("d-spacing", "d")
     combo.addItem("Q", "q")
+    return combo
+
+
+def _field_combo(items: list[tuple[str, str]]) -> QComboBox:
+    combo = QComboBox()
+    for label, value in items:
+        combo.addItem(label, value)
     return combo
 
 

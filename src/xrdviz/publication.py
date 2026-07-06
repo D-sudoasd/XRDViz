@@ -79,9 +79,31 @@ def export_cleaned_data(state: ProjectState, output_dir: str | Path) -> Path:
                     "axis_kind": layer.axis_kind,
                     "x": x_value,
                     "intensity": y_value,
+                    "frame_index": layer.frame_index if layer.frame_index is not None else "",
+                    "time_s": layer.time_s if layer.time_s is not None else "",
+                    "temperature": layer.temperature if layer.temperature is not None else "",
+                    "temperature_unit": layer.temperature_unit,
+                    "group": layer.group,
+                    "color_value": layer.color_value if layer.color_value is not None else "",
                 }
             )
-    _write_rows(output, ["sample", "source_file", "axis_kind", "x", "intensity"], rows)
+    _write_rows(
+        output,
+        [
+            "sample",
+            "source_file",
+            "axis_kind",
+            "x",
+            "intensity",
+            "frame_index",
+            "time_s",
+            "temperature",
+            "temperature_unit",
+            "group",
+            "color_value",
+        ],
+        rows,
+    )
     return output
 
 
@@ -95,6 +117,7 @@ def write_publication_report(
 ) -> Path:
     output = Path(output_dir) / "xrd_plot_report.md"
     settings = state.settings
+    stacking_enabled = settings.stack_enabled or settings.view_mode in {"stack", "gradient_stack"}
     lines = [
         "# XRD Plot Report",
         "",
@@ -105,9 +128,18 @@ def write_publication_report(
         f"- dpi: {settings.dpi}",
         f"- x axis: {settings.x_axis}",
         f"- energy: {settings.energy_kev:g} keV",
+        f"- template: {settings.template_name}",
+        f"- legend location: {settings.legend_location}",
+        f"- view mode: {settings.view_mode}",
+        f"- sort by: {settings.sort_by}",
+        f"- color by: {settings.color_by}",
+        f"- colormap: {settings.colormap}",
+        f"- colorbar: {'enabled' if settings.show_colorbar else 'disabled'}",
+        f"- show every N spectra: {settings.show_every_n}",
+        f"- heatmap points: {settings.heatmap_points}",
         f"- normalization: {'enabled' if settings.normalize else 'disabled'}",
         f"- log scale: {'enabled' if settings.log_scale else 'disabled'}",
-        f"- stacking: {'enabled' if settings.stack_enabled else 'disabled'}",
+        f"- stacking: {'enabled' if stacking_enabled else 'disabled'}",
         "",
         "## Spectra",
         "",
@@ -115,7 +147,20 @@ def write_publication_report(
     if not state.spectra:
         lines.append("- No spectra loaded.")
     for layer in state.spectra:
-        lines.append(f"- `{layer.source_path}` -> `{layer.name}`: {len(layer.x)} cleaned points")
+        metadata = []
+        if layer.frame_index is not None:
+            metadata.append(f"frame={layer.frame_index}")
+        if layer.time_s is not None:
+            metadata.append(f"time_s={layer.time_s:g}")
+        if layer.temperature is not None:
+            suffix = layer.temperature_unit or ""
+            metadata.append(f"temperature={layer.temperature:g}{suffix}")
+        if layer.group:
+            metadata.append(f"group={layer.group}")
+        if layer.color_value is not None:
+            metadata.append(f"color_value={layer.color_value:g}")
+        metadata_text = f" ({', '.join(metadata)})" if metadata else ""
+        lines.append(f"- `{layer.source_path}` -> `{layer.name}`: {len(layer.x)} cleaned points{metadata_text}")
         if layer.removed_rows:
             lines.append(f"  - removed rows: {layer.removed_rows}")
         for warning in layer.warnings:

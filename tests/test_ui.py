@@ -31,6 +31,14 @@ assert hasattr(window, "y_tick_labels_check")
 assert hasattr(window, "panel_title_edit")
 assert hasattr(window, "x_min_edit")
 assert hasattr(window, "x_max_edit")
+assert hasattr(window, "view_mode_combo")
+assert hasattr(window, "color_by_combo")
+assert hasattr(window, "colormap_combo")
+assert hasattr(window, "show_colorbar_check")
+assert hasattr(window, "show_every_n_spin")
+assert hasattr(window, "heatmap_points_spin")
+assert hasattr(window, "template_combo")
+assert hasattr(window, "legend_location_combo")
 assert window.y_tick_labels_check.isChecked() is False
 window.log_check.setChecked(True)
 window.stack_check.setChecked(True)
@@ -40,6 +48,14 @@ window.x_min_edit.setText("0.9")
 window.x_max_edit.setText("3.0")
 window.stack_spacing_spin.setValue(0.5)
 window.x_axis_combo.setCurrentIndex(1)
+window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("heatmap"))
+window.color_by_combo.setCurrentIndex(window.color_by_combo.findData("frame"))
+window.colormap_combo.setCurrentIndex(window.colormap_combo.findData("viridis"))
+window.show_colorbar_check.setChecked(True)
+window.show_every_n_spin.setValue(2)
+window.heatmap_points_spin.setValue(64)
+window.template_combo.setCurrentIndex(window.template_combo.findData("science_single"))
+window.legend_location_combo.setCurrentIndex(window.legend_location_combo.findData("outside right"))
 from pathlib import Path
 import tempfile
 with tempfile.TemporaryDirectory() as tmp:
@@ -51,6 +67,7 @@ with tempfile.TemporaryDirectory() as tmp:
     refs = root / "reference_peaks.csv"
     refs.write_text("position,label,phase,intensity,hkl,source_axis,color,shape\\n30,Main,Calcite,100,104,two_theta,#009E73,triangle\\n", encoding="utf-8")
     window.add_files([spectrum])
+    assert window.state.spectra[0].frame_index is not None
     window.import_sample_metadata(labels)
     window.import_reference_peaks(refs)
     assert window.layer_table.rowCount() == 2
@@ -74,6 +91,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert window.state.spectra[0].visible is True
     outputs = window.export_publication_bundle_to(root / "export")
     assert outputs.report.exists()
+    assert "view mode: heatmap" in outputs.report.read_text(encoding="utf-8")
 app.processEvents()
 window.close()
 app.processEvents()

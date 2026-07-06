@@ -5,6 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from xrdviz.axes import convert_x
+from xrdviz.batch import (
+    color_for_value,
+    colorbar_label,
+    layer_batch_value,
+    make_heatmap_matrix,
+    matplotlib_colormap,
+    select_spectrum_layers,
+)
 from xrdviz.cif import phase_peak_position_for_axis
 from xrdviz.models import PLOT_AXIS_COLOR, PLOT_MUTED_COLOR, PLOT_TEXT_COLOR, ProjectState, default_axis_label
 from xrdviz.plot.style import apply_matplotlib_style
@@ -21,14 +29,29 @@ def render_project(state: ProjectState, figure: Any | None = None) -> tuple[Any,
 
     main_ax = fig.add_subplot(111)
     main_ax.set_facecolor("white")
-    spectrum_handles = _draw_spectra(main_ax, state)
+    axes: dict[str, Any] = {"main": main_ax, "bragg": main_ax}
+    if settings.view_mode == "heatmap":
+        heatmap_artist, colorbar_ax = _draw_heatmap(main_ax, state, fig)
+        spectrum_handles = []
+        phase_handles = []
+        if heatmap_artist is not None:
+            axes["heatmap"] = heatmap_artist
+        if colorbar_ax is not None:
+            axes["colorbar"] = colorbar_ax
+    else:
+        spectrum_handles, colorbar_ax = _draw_spectra(main_ax, state, fig)
+        if colorbar_ax is not None:
+            axes["colorbar"] = colorbar_ax
+        x_range, exact_x_range = _display_x_range(state)
+        _apply_x_range(main_ax, x_range, exact=exact_x_range)
+        phase_handles = _draw_bragg_band(main_ax, state)
+        _apply_x_range(main_ax, x_range, exact=exact_x_range)
+
     x_range, exact_x_range = _display_x_range(state)
-    _apply_x_range(main_ax, x_range, exact=exact_x_range)
-    phase_handles = _draw_bragg_band(main_ax, state)
     _apply_x_range(main_ax, x_range, exact=exact_x_range)
 
     main_ax.set_xlabel(settings.x_label or default_axis_label(settings.x_axis))
-    main_ax.set_ylabel(settings.y_label)
+    main_ax.set_ylabel(colorbar_label(settings.sort_by) if settings.view_mode == "heatmap" else settings.y_label)
     if settings.panel_title:
         main_ax.text(
             0.03,
@@ -42,8 +65,13 @@ def render_project(state: ProjectState, figure: Any | None = None) -> tuple[Any,
             color=PLOT_TEXT_COLOR,
         )
     _polish_main_axis(main_ax, state, spectrum_handles, phase_handles)
-    fig.subplots_adjust(left=0.16, right=0.98, top=0.96, bottom=0.16)
-    return fig, {"main": main_ax, "bragg": main_ax}
+    fig.subplots_adjust(
+        left=settings.margin_left,
+        right=settings.margin_right,
+        top=settings.margin_top,
+        bottom=settings.margin_bottom,
+    )
+    return fig, axes
 
 
 def export_project(state: ProjectState, path: str | Path) -> None:
@@ -52,9 +80,16 @@ def export_project(state: ProjectState, path: str | Path) -> None:
     fig.savefig(output, dpi=state.settings.dpi, bbox_inches="tight")
 
 
-def _draw_spectra(ax: Any, state: ProjectState) -> list[Any]:
+def _draw_spectra(ax: Any, state: ProjectState, fig: Any) -> tuple[list[Any], Any | None]:
     settings = state.settings
-    visible_layers = sorted([layer for layer in state.spectra if layer.visible], key=lambda layer: (layer.order, layer.name))
+    visible_layers = select_spectrum_layers(state.spectra, show_every_n=settings.show_every_n)
+    gradient_values = [
+        layer_batch_value(layer, settings.color_by) if layer_batch_value(layer, settings.color_by) is not None else float(layer.order)
+        for layer in visible_layers
+    ]
+    finite_values = [value for value in gradient_values if value is not None and math.isfinite(value)]
+    value_min = min(finite_values) if finite_values else 0.0
+    value_max = max(finite_values) if finite_values else 1.0
     handles = []
     for index, layer in enumerate(visible_layers):
         x_values = convert_x(layer.x, layer.axis_kind, settings.x_axis, settings.energy_kev)
@@ -67,10 +102,14 @@ def _draw_spectra(ax: Any, state: ProjectState) -> list[Any]:
         if not pairs:
             continue
         x_clean, y_clean = zip(*pairs)
+        color = layer.color
+        if settings.view_mode == "gradient_stack":
+            value = gradient_values[index] if index < len(gradient_values) else float(index)
+            color = color_for_value(float(value), value_min, value_max, colormap=settings.colormap)
         (handle,) = ax.plot(
             x_clean,
             y_clean,
-            color=layer.color,
+            color=color,
             linewidth=layer.linewidth,
             alpha=0.96,
             solid_capstyle="round",
@@ -79,8 +118,41 @@ def _draw_spectra(ax: Any, state: ProjectState) -> list[Any]:
         )
         handles.append(handle)
         if settings.direct_labels:
-            ax.text(x_clean[-1], y_clean[-1], f"  {layer.name}", va="center", ha="left", fontsize=settings.tick_label_size, color=layer.color)
-    return handles
+            ax.text(x_clean[-1], y_clean[-1], f"  {layer.name}", va="center", ha="left", fontsize=settings.tick_label_size, color=color)
+    colorbar_ax = None
+    if settings.show_colorbar and settings.view_mode == "gradient_stack" and finite_values:
+        colorbar_ax = _add_scalar_colorbar(fig, ax, settings.colormap, value_min, value_max, colorbar_label(settings.color_by))
+    return handles, colorbar_ax
+
+
+def _draw_heatmap(ax: Any, state: ProjectState, fig: Any) -> tuple[Any | None, Any | None]:
+    settings = state.settings
+    x_grid, row_values, matrix = make_heatmap_matrix(state)
+    if matrix.size == 0:
+        return None, None
+    y_min, y_max = -0.5, matrix.shape[0] - 0.5
+    image = ax.imshow(
+        matrix,
+        extent=(float(x_grid[0]), float(x_grid[-1]), y_min, y_max),
+        origin="lower",
+        aspect="auto",
+        cmap=matplotlib_colormap(settings.colormap),
+        interpolation="nearest",
+    )
+    ax.set_yticks(list(range(len(row_values))))
+    ax.set_yticklabels([_format_metadata_tick(value) for value in row_values])
+    colorbar_ax = None
+    if settings.show_colorbar:
+        colorbar_ax = fig.colorbar(image, ax=ax, pad=0.02, fraction=0.045).ax
+        colorbar_ax.set_ylabel("Intensity", color=PLOT_TEXT_COLOR)
+        colorbar_ax.tick_params(colors=PLOT_TEXT_COLOR, width=0.55, length=2.5)
+    return image, colorbar_ax
+
+
+def _format_metadata_tick(value: float) -> str:
+    if math.isfinite(value) and abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:.4g}"
 
 
 def _draw_bragg_band(ax: Any, state: ProjectState) -> list[Any]:
@@ -173,15 +245,31 @@ def _polish_main_axis(ax: Any, state: ProjectState, spectrum_handles: list[Any],
         handles.extend(spectrum_handles)
     if settings.show_phase_legend:
         handles.extend(phase_handles)
-    if handles:
-        ax.legend(
-            handles=handles,
-            loc="upper right",
-            frameon=False,
-            handlelength=1.6,
-            handletextpad=0.5,
-            borderaxespad=0.35,
-        )
+    if handles and settings.legend_location != "none":
+        legend_kwargs = {
+            "handles": handles,
+            "frameon": False,
+            "handlelength": 1.6,
+            "handletextpad": 0.5,
+            "borderaxespad": 0.35,
+        }
+        if settings.legend_location == "outside right":
+            legend_kwargs.update({"loc": "center left", "bbox_to_anchor": (1.02, 0.5)})
+        else:
+            legend_kwargs["loc"] = settings.legend_location
+        ax.legend(**legend_kwargs)
+
+
+def _add_scalar_colorbar(fig: Any, ax: Any, colormap: str, vmin: float, vmax: float, label: str) -> Any:
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    mappable = ScalarMappable(norm=Normalize(vmin=vmin, vmax=vmax), cmap=matplotlib_colormap(colormap))
+    mappable.set_array([])
+    colorbar = fig.colorbar(mappable, ax=ax, pad=0.02, fraction=0.045)
+    colorbar.ax.set_ylabel(label, color=PLOT_TEXT_COLOR)
+    colorbar.ax.tick_params(colors=PLOT_TEXT_COLOR, width=0.55, length=2.5)
+    return colorbar.ax
 
 
 def settings_bragg_fraction(state: ProjectState) -> float:

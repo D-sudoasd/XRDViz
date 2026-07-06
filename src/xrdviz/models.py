@@ -5,6 +5,17 @@ from typing import Any
 
 
 AXIS_KINDS = {"two_theta", "d", "q"}
+VIEW_MODES = {"overlay", "stack", "gradient_stack", "heatmap"}
+BATCH_FIELDS = {"order", "frame", "time", "temperature", "color_value"}
+LEGEND_LOCATIONS = {
+    "upper right",
+    "upper left",
+    "lower right",
+    "lower left",
+    "best",
+    "outside right",
+    "none",
+}
 
 PUBLICATION_PALETTE = [
     "#45A7E6",
@@ -67,6 +78,12 @@ class SpectrumLayer:
     warnings: list[str] = field(default_factory=list)
     removed_rows: int = 0
     order: int = 0
+    frame_index: int | None = None
+    time_s: float | None = None
+    temperature: float | None = None
+    temperature_unit: str = ""
+    group: str = ""
+    color_value: float | None = None
 
     def __post_init__(self) -> None:
         self.axis_kind = normalize_axis_kind(self.axis_kind)
@@ -78,6 +95,13 @@ class SpectrumLayer:
             raise ValueError("Spectrum x and y arrays must have the same length")
         if len(self.raw_x) != len(self.raw_y):
             raise ValueError("Raw spectrum x and y arrays must have the same length")
+        self.order = int(self.order)
+        self.frame_index = None if self.frame_index is None else int(self.frame_index)
+        self.time_s = None if self.time_s is None else float(self.time_s)
+        self.temperature = None if self.temperature is None else float(self.temperature)
+        self.temperature_unit = str(self.temperature_unit or "")
+        self.group = str(self.group or "")
+        self.color_value = None if self.color_value is None else float(self.color_value)
 
 
 @dataclass(slots=True)
@@ -163,6 +187,19 @@ class PlotSettings:
     direct_labels: bool = False
     show_phase_legend: bool = True
     show_y_tick_labels: bool = False
+    view_mode: str = "overlay"
+    sort_by: str = "frame"
+    color_by: str = "frame"
+    colormap: str = "blue_rose"
+    show_colorbar: bool = False
+    show_every_n: int = 1
+    heatmap_points: int = 600
+    legend_location: str = "upper right"
+    template_name: str = "nature_single"
+    margin_left: float = 0.16
+    margin_right: float = 0.98
+    margin_top: float = 0.96
+    margin_bottom: float = 0.16
 
     def __post_init__(self) -> None:
         self.x_axis = normalize_axis_kind(self.x_axis)
@@ -176,6 +213,22 @@ class PlotSettings:
             raise ValueError("DPI must be positive")
         if self.x_min is not None and self.x_max is not None and self.x_min >= self.x_max:
             raise ValueError("x_min must be smaller than x_max")
+        if self.view_mode not in VIEW_MODES:
+            raise ValueError(f"Unsupported view mode: {self.view_mode!r}")
+        if self.sort_by not in BATCH_FIELDS:
+            raise ValueError(f"Unsupported sort field: {self.sort_by!r}")
+        if self.color_by not in BATCH_FIELDS:
+            raise ValueError(f"Unsupported color field: {self.color_by!r}")
+        if self.show_every_n < 1:
+            raise ValueError("show_every_n must be at least 1")
+        if self.heatmap_points < 2:
+            raise ValueError("heatmap_points must be at least 2")
+        if self.legend_location not in LEGEND_LOCATIONS:
+            raise ValueError(f"Unsupported legend location: {self.legend_location!r}")
+        if not (0.0 <= self.margin_left < self.margin_right <= 1.0):
+            raise ValueError("Horizontal margins must satisfy 0 <= left < right <= 1")
+        if not (0.0 <= self.margin_bottom < self.margin_top <= 1.0):
+            raise ValueError("Vertical margins must satisfy 0 <= bottom < top <= 1")
 
 
 @dataclass(slots=True)

@@ -26,7 +26,8 @@ def transform_intensity(
 
 
 def display_y_for_layer(layer: SpectrumLayer, settings: PlotSettings, layer_index: int) -> list[float]:
-    stack_offset = settings.stack_spacing * layer_index if settings.stack_enabled else 0.0
+    stack_mode = settings.stack_enabled or settings.view_mode in {"stack", "gradient_stack"}
+    stack_offset = settings.stack_spacing * layer_index if stack_mode else 0.0
     return transform_intensity(
         layer.y,
         normalize=settings.normalize,

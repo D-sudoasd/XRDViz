@@ -113,6 +113,46 @@ class PublicationWorkflowTests(unittest.TestCase):
             self.assertTrue(outputs.report.exists())
             self.assertIn("figure.svg", outputs.report.read_text(encoding="utf-8"))
 
+    def test_publication_report_records_batch_and_template_settings(self):
+        state = ProjectState(
+            spectra=[
+                SpectrumLayer(
+                    name="frame 1",
+                    x=[10.0, 20.0],
+                    y=[1.0, 2.0],
+                    source_path="scan_0001_300C.xy",
+                    frame_index=1,
+                    time_s=30.0,
+                    temperature=300.0,
+                    color_value=1.0,
+                )
+            ],
+            settings=PlotSettings(
+                view_mode="heatmap",
+                color_by="temperature",
+                colormap="magma",
+                show_colorbar=True,
+                show_every_n=3,
+                heatmap_points=128,
+                template_name="science_single",
+                legend_location="outside right",
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = write_publication_report(state, tmp, exported_figure="figure.svg")
+            text = report.read_text(encoding="utf-8")
+
+        self.assertIn("- view mode: heatmap", text)
+        self.assertIn("- color by: temperature", text)
+        self.assertIn("- colormap: magma", text)
+        self.assertIn("- show every N spectra: 3", text)
+        self.assertIn("- heatmap points: 128", text)
+        self.assertIn("- template: science_single", text)
+        self.assertIn("- legend location: outside right", text)
+        self.assertIn("frame=1", text)
+        self.assertIn("temperature=300", text)
+
 
 if __name__ == "__main__":
     unittest.main()
