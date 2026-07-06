@@ -6,16 +6,20 @@ from typing import Any
 
 AXIS_KINDS = {"two_theta", "d", "q"}
 
-OKABE_ITO = [
-    "#0072B2",
-    "#D55E00",
-    "#009E73",
-    "#CC79A7",
-    "#E69F00",
-    "#56B4E9",
-    "#000000",
-    "#F0E442",
+PUBLICATION_PALETTE = [
+    "#45A7E6",
+    "#D62F53",
+    "#2B9C8F",
+    "#7A5CC7",
+    "#E2A23A",
+    "#286FB7",
+    "#B05A7A",
+    "#555555",
 ]
+OKABE_ITO = PUBLICATION_PALETTE
+PLOT_TEXT_COLOR = "#2C2C2C"
+PLOT_AXIS_COLOR = "#3F3F3F"
+PLOT_MUTED_COLOR = "#9A9A9A"
 
 
 def normalize_axis_kind(axis_kind: str) -> str:
@@ -53,7 +57,7 @@ class SpectrumLayer:
     x: list[float]
     y: list[float]
     axis_kind: str = "two_theta"
-    color: str = "#0072B2"
+    color: str = PUBLICATION_PALETTE[0]
     visible: bool = True
     offset: float = 0.0
     linewidth: float = 1.0
@@ -97,7 +101,7 @@ class PhasePeak:
 class PhaseLayer:
     name: str
     source_path: str
-    color: str = "#D55E00"
+    color: str = PUBLICATION_PALETTE[1]
     peaks: list[PhasePeak] = field(default_factory=list)
     visible: bool = True
     tick_height: float = 0.8

@@ -6,7 +6,7 @@ from typing import Any
 
 from xrdviz.axes import convert_x
 from xrdviz.cif import phase_peak_position_for_axis
-from xrdviz.models import ProjectState, default_axis_label
+from xrdviz.models import PLOT_AXIS_COLOR, PLOT_MUTED_COLOR, PLOT_TEXT_COLOR, ProjectState, default_axis_label
 from xrdviz.plot.style import apply_matplotlib_style
 from xrdviz.transforms import display_y_for_layer
 
@@ -20,6 +20,7 @@ def render_project(state: ProjectState, figure: Any | None = None) -> tuple[Any,
     fig.clear()
 
     main_ax = fig.add_subplot(111)
+    main_ax.set_facecolor("white")
     spectrum_handles = _draw_spectra(main_ax, state)
     x_range, exact_x_range = _display_x_range(state)
     _apply_x_range(main_ax, x_range, exact=exact_x_range)
@@ -38,6 +39,7 @@ def render_project(state: ProjectState, figure: Any | None = None) -> tuple[Any,
             va="top",
             fontsize=max(settings.axis_label_size, settings.font_size),
             fontweight="bold",
+            color=PLOT_TEXT_COLOR,
         )
     _polish_main_axis(main_ax, state, spectrum_handles, phase_handles)
     fig.subplots_adjust(left=0.16, right=0.98, top=0.96, bottom=0.16)
@@ -65,7 +67,16 @@ def _draw_spectra(ax: Any, state: ProjectState) -> list[Any]:
         if not pairs:
             continue
         x_clean, y_clean = zip(*pairs)
-        (handle,) = ax.plot(x_clean, y_clean, color=layer.color, linewidth=layer.linewidth, label=layer.name)
+        (handle,) = ax.plot(
+            x_clean,
+            y_clean,
+            color=layer.color,
+            linewidth=layer.linewidth,
+            alpha=0.96,
+            solid_capstyle="round",
+            solid_joinstyle="round",
+            label=layer.name,
+        )
         handles.append(handle)
         if settings.direct_labels:
             ax.text(x_clean[-1], y_clean[-1], f"  {layer.name}", va="center", ha="left", fontsize=settings.tick_label_size, color=layer.color)
@@ -89,7 +100,7 @@ def _draw_bragg_band(ax: Any, state: ProjectState) -> list[Any]:
     band_span = data_span * max(settings_bragg_fraction(state), 0.06)
     row_height = band_span / max(len(visible_phases), 1)
     band_bottom = data_bottom - band_span
-    tick_linewidth = max(0.7, state.settings.line_width * 0.8)
+    tick_linewidth = max(0.55, state.settings.line_width * 0.75)
 
     for index, phase in enumerate(visible_phases):
         baseline = band_bottom + row_height * index + row_height * 0.18
@@ -104,14 +115,14 @@ def _draw_bragg_band(ax: Any, state: ProjectState) -> list[Any]:
             va="center",
             fontsize=state.settings.tick_label_size,
             color=phase.color,
-            fontweight="bold",
+            fontweight="normal",
             clip_on=False,
         )
         for peak in phase.peaks:
             x_value = phase_peak_position_for_axis(phase, peak, state.settings.x_axis, state.settings.energy_kev)
             if not math.isfinite(x_value) or x_value < x_min or x_value > x_max:
                 continue
-            ax.vlines(x_value, baseline, tick_top, color=phase.color, linewidth=tick_linewidth, zorder=2)
+            ax.vlines(x_value, baseline, tick_top, color=phase.color, linewidth=tick_linewidth, alpha=0.95, zorder=2)
             if peak in characteristic and phase.label_policy != "none":
                 label = peak.label or peak.hkl or phase.phase or phase.name
                 ax.text(
@@ -126,11 +137,11 @@ def _draw_bragg_band(ax: Any, state: ProjectState) -> list[Any]:
                     clip_on=True,
                 )
             if phase.show_guides and peak in characteristic:
-                ax.axvline(x_value, color=phase.color, linestyle="--", linewidth=0.6, alpha=0.45, zorder=1)
+                ax.axvline(x_value, color=phase.color, linestyle="--", linewidth=0.55, alpha=0.36, zorder=1)
         if state.settings.show_phase_legend:
             phase_handles.append(_phase_legend_handle(phase.color, phase.phase or phase.name))
 
-    ax.axhline(data_bottom, color="#222222", linewidth=0.5, alpha=0.45, zorder=1)
+    ax.axhline(data_bottom, color=PLOT_MUTED_COLOR, linewidth=0.45, alpha=0.55, zorder=1)
     ax.set_ylim(band_bottom - row_height * 0.08, data_top + data_span * 0.04)
     return phase_handles
 
@@ -139,8 +150,18 @@ def _polish_main_axis(ax: Any, state: ProjectState, spectrum_handles: list[Any],
     settings = state.settings
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(0.8)
+        spine.set_linewidth(min(max(settings.line_width, 0.6), 0.8))
+        spine.set_color(PLOT_AXIS_COLOR)
     ax.grid(False)
+    ax.tick_params(
+        axis="both",
+        colors=PLOT_TEXT_COLOR,
+        width=0.65,
+        length=3.0,
+        direction="out",
+        top=False,
+        right=False,
+    )
     ax.tick_params(
         axis="y",
         left=settings.show_y_tick_labels,
@@ -153,7 +174,14 @@ def _polish_main_axis(ax: Any, state: ProjectState, spectrum_handles: list[Any],
     if settings.show_phase_legend:
         handles.extend(phase_handles)
     if handles:
-        ax.legend(handles=handles, loc="upper right", frameon=False, handlelength=1.8, borderaxespad=0.4)
+        ax.legend(
+            handles=handles,
+            loc="upper right",
+            frameon=False,
+            handlelength=1.6,
+            handletextpad=0.5,
+            borderaxespad=0.35,
+        )
 
 
 def settings_bragg_fraction(state: ProjectState) -> float:
@@ -205,7 +233,7 @@ def _range_with_padding(x_min: float, x_max: float) -> tuple[float, float]:
 def _phase_legend_handle(color: str, label: str):
     from matplotlib.lines import Line2D
 
-    return Line2D([0], [0], color=color, marker="|", linestyle="None", markersize=8, markeredgewidth=1.2, label=label)
+    return Line2D([0], [0], color=color, marker="|", linestyle="None", markersize=7, markeredgewidth=1.0, label=label)
 
 
 def _marker_for_shape(shape: str) -> str:

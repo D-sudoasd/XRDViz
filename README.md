@@ -20,16 +20,16 @@ XRDViz is a source-run Python/Qt desktop application for plotting one-dimensiona
 
 ```csv
 filename,label,order,color,visible,offset
-sample_a.xy,Annealed,1,#D55E00,true,0.3
-sample_b.xy,As cast,2,#0072B2,true,0.0
+sample_a.xy,Annealed,1,#D62F53,true,0.3
+sample_b.xy,As cast,2,#45A7E6,true,0.0
 ```
 
 `reference_peaks.csv`:
 
 ```csv
 position,label,phase,intensity,hkl,source_axis,color,shape
-30.0,Main peak,Calcite,100,104,two_theta,#009E73,triangle
-2.5,d peak,Calcite,40,110,d,#009E73,square
+30.0,Main peak,Calcite,100,104,two_theta,#2B9C8F,triangle
+2.5,d peak,Calcite,40,110,d,#2B9C8F,square
 ```
 
 `source_axis` accepts `two_theta`, `d`, or `q`; peaks are converted to the current plot axis using the global energy setting.

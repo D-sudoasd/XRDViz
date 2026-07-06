@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from xrdviz.models import PlotSettings
+from xrdviz.models import PLOT_AXIS_COLOR, PLOT_TEXT_COLOR, PUBLICATION_PALETTE, PlotSettings
 from xrdviz.plot.style import NATURE_SINGLE_WIDTH_IN, nature_single_column
 
 
@@ -23,6 +23,12 @@ class NatureStyleTests(unittest.TestCase):
         self.assertLessEqual(settings.line_width, 1.0)
         self.assertGreaterEqual(settings.line_width, 0.25)
         self.assertEqual(settings.font_family, "Arial")
+
+    def test_default_palette_uses_refined_blue_rose_opening_pair(self):
+        self.assertEqual(PUBLICATION_PALETTE[0], "#45A7E6")
+        self.assertEqual(PUBLICATION_PALETTE[1], "#D62F53")
+        self.assertNotEqual(PLOT_AXIS_COLOR, "#000000")
+        self.assertNotEqual(PLOT_TEXT_COLOR, "#000000")
 
 
 if __name__ == "__main__":

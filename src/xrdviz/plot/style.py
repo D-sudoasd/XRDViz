@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from xrdviz.models import OKABE_ITO, PlotSettings
+from xrdviz.models import PLOT_AXIS_COLOR, PLOT_TEXT_COLOR, PUBLICATION_PALETTE, PlotSettings
 
 NATURE_SINGLE_WIDTH_IN = 89.0 / 25.4
 NATURE_DOUBLE_WIDTH_IN = 183.0 / 25.4
@@ -48,15 +48,27 @@ def apply_matplotlib_style(settings: PlotSettings) -> None:
             "font.sans-serif": [settings.font_family, "Arial", "Helvetica", "DejaVu Sans"],
             "font.size": settings.font_size,
             "axes.labelsize": settings.axis_label_size,
+            "axes.edgecolor": PLOT_AXIS_COLOR,
+            "axes.labelcolor": PLOT_TEXT_COLOR,
             "xtick.labelsize": settings.tick_label_size,
             "ytick.labelsize": settings.tick_label_size,
+            "xtick.color": PLOT_TEXT_COLOR,
+            "ytick.color": PLOT_TEXT_COLOR,
+            "text.color": PLOT_TEXT_COLOR,
             "axes.linewidth": min(settings.line_width, 0.8),
             "lines.linewidth": settings.line_width,
             "legend.frameon": False,
             "legend.fontsize": settings.tick_label_size,
+            "legend.labelcolor": PLOT_TEXT_COLOR,
+            "figure.facecolor": "white",
+            "axes.facecolor": "white",
+            "savefig.facecolor": "white",
             "figure.dpi": settings.dpi,
             "savefig.dpi": settings.dpi,
-            "axes.prop_cycle": mpl.cycler(color=OKABE_ITO),
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "svg.fonttype": "none",
+            "axes.prop_cycle": mpl.cycler(color=PUBLICATION_PALETTE),
         }
     )
 
