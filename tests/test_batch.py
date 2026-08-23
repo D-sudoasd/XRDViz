@@ -1,3 +1,4 @@
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -51,6 +52,89 @@ class BatchXrdTests(unittest.TestCase):
         self.assertEqual([layer.name for layer in layers], ["scan_001", "scan_002"])
         self.assertEqual([layer.color for layer in layers], ["#222222", "#111111"])
         self.assertEqual([layer.color_value for layer in layers], [1.0, 2.0])
+
+    def test_missing_time_and_temperature_stay_missing(self):
+        from xrdviz.batch import apply_batch_metadata, colorbar_label, make_heatmap_matrix
+
+        layers = [
+            SpectrumLayer(name="first", x=[1.0, 2.0], y=[10.0, 20.0], source_path="first.xy"),
+            SpectrumLayer(name="second", x=[1.0, 2.0], y=[20.0, 10.0], source_path="second.xy"),
+        ]
+
+        apply_batch_metadata(layers, sort_by="temperature", color_by="temperature")
+
+        self.assertEqual([layer.frame_index for layer in layers], [0, 1])
+        self.assertTrue(all(layer.temperature is None for layer in layers))
+        self.assertTrue(all(layer.color_value is None for layer in layers))
+        self.assertEqual(colorbar_label("temperature", temperature_unit="C"), "Temperature (°C)")
+
+        state = ProjectState(
+            spectra=layers,
+            settings=PlotSettings(
+                view_mode="heatmap",
+                sort_by="temperature",
+                x_min=1.0,
+                x_max=2.0,
+                heatmap_points=4,
+            ),
+        )
+        _x_grid, row_values, _matrix = make_heatmap_matrix(state)
+        self.assertTrue(all(math.isnan(value) for value in row_values))
+
+    def test_gradient_colors_missing_values_gray_and_all_missing_is_explicit(self):
+        from xrdviz.batch import assign_gradient_colors
+        from xrdviz.models import PLOT_MUTED_COLOR
+
+        missing = SpectrumLayer(name="missing", x=[1.0, 2.0], y=[1.0, 2.0], color_value=None)
+        valid = SpectrumLayer(name="valid", x=[1.0, 2.0], y=[2.0, 1.0], color_value=2.0)
+        assign_gradient_colors([missing, valid])
+        self.assertEqual(missing.color, PLOT_MUTED_COLOR)
+        self.assertNotEqual(valid.color, PLOT_MUTED_COLOR)
+
+        only_missing = SpectrumLayer(name="only", x=[1.0, 2.0], y=[1.0, 2.0], color_value=None)
+        assign_gradient_colors([only_missing])
+        self.assertEqual(only_missing.color, PLOT_MUTED_COLOR)
+
+    def test_mixed_celsius_and_kelvin_are_compared_in_kelvin(self):
+        from xrdviz.batch import apply_batch_metadata, colorbar_label, make_heatmap_matrix, single_temperature_unit
+
+        layers = [
+            SpectrumLayer(
+                name="100 C",
+                x=[1.0, 2.0],
+                y=[1.0, 2.0],
+                temperature=100.0,
+                temperature_unit="C",
+            ),
+            SpectrumLayer(
+                name="300 K",
+                x=[1.0, 2.0],
+                y=[2.0, 1.0],
+                temperature=300.0,
+                temperature_unit="K",
+            ),
+        ]
+
+        apply_batch_metadata(layers, sort_by="temperature", color_by="temperature")
+
+        self.assertEqual([layer.name for layer in layers], ["300 K", "100 C"])
+        self.assertEqual(single_temperature_unit(layers), "K")
+        self.assertEqual(colorbar_label("temperature", temperature_unit=single_temperature_unit(layers)), "Temperature (K)")
+        self.assertAlmostEqual(layers[0].color_value, 300.0)
+        self.assertAlmostEqual(layers[1].color_value, 373.15)
+        state = ProjectState(
+            spectra=layers,
+            settings=PlotSettings(view_mode="heatmap", sort_by="temperature", x_min=1.0, x_max=2.0),
+        )
+        _x_grid, row_values, _matrix = make_heatmap_matrix(state)
+        self.assertEqual(list(row_values), [300.0, 373.15])
+
+        unknown = [
+            SpectrumLayer(name="declared", x=[1.0, 2.0], y=[1.0, 2.0], temperature=25.0, temperature_unit="C"),
+            SpectrumLayer(name="unitless", x=[1.0, 2.0], y=[2.0, 1.0], temperature=300.0),
+        ]
+        apply_batch_metadata(unknown, sort_by="temperature", color_by="temperature")
+        self.assertTrue(all(layer.color_value is None for layer in unknown))
 
     def test_heatmap_matrix_uses_common_grid_and_transformed_intensity(self):
         from xrdviz.batch import make_heatmap_matrix

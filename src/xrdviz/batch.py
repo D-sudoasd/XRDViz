@@ -9,7 +9,7 @@ from typing import Iterable
 import numpy as np
 
 from xrdviz.axes import convert_x
-from xrdviz.models import PUBLICATION_PALETTE, PlotSettings, ProjectState, SpectrumLayer
+from xrdviz.models import PLOT_MUTED_COLOR, PUBLICATION_PALETTE, PlotSettings, ProjectState, SpectrumLayer
 from xrdviz.transforms import transform_intensity
 
 TIME_RE = re.compile(r"(?P<value>[+-]?\d+(?:\.\d+)?)\s*(?P<unit>ms|sec|s|min|m|hr|h)(?![A-Za-z])", re.IGNORECASE)
@@ -48,12 +48,14 @@ def apply_batch_metadata(
     *,
     sort_by: str = "frame",
     color_by: str = "frame",
-    colormap: str = "blue_rose",
+    colormap: str = "cividis",
 ) -> None:
     for fallback_index, layer in enumerate(layers):
         meta_source = layer.source_path or layer.name
         meta = parse_spectrum_metadata(meta_source)
         if layer.frame_index is None:
+            # Frame order is the historical fallback used by the UI workflow;
+            # time/temperature/color metadata below remain genuinely missing.
             layer.frame_index = meta.frame_index if meta.frame_index is not None else fallback_index
         if layer.time_s is None:
             layer.time_s = meta.time_s
@@ -64,12 +66,23 @@ def apply_batch_metadata(
         if not layer.group:
             layer.group = meta.group
 
-    layers.sort(key=lambda layer: _sort_key(layer, sort_by))
+    temperature_unit = single_temperature_unit(layers)
+    layers.sort(
+        key=lambda layer: _sort_key(
+            layer,
+            sort_by,
+            temperature_unit=temperature_unit if sort_by == "temperature" else None,
+        )
+    )
     for order, layer in enumerate(layers):
         layer.order = order
     for layer in layers:
-        value = layer_batch_value(layer, color_by)
-        layer.color_value = float(value if value is not None else layer.order)
+        value = layer_batch_value(
+            layer,
+            color_by,
+            temperature_unit=temperature_unit if color_by == "temperature" else None,
+        )
+        layer.color_value = None if value is None else float(value)
 
 
 def select_spectrum_layers(layers: Iterable[SpectrumLayer], *, show_every_n: int = 1) -> list[SpectrumLayer]:
@@ -78,35 +91,46 @@ def select_spectrum_layers(layers: Iterable[SpectrumLayer], *, show_every_n: int
     return [layer for index, layer in enumerate(visible) if index % step == 0]
 
 
-def layer_batch_value(layer: SpectrumLayer, field: str) -> float | None:
+def layer_batch_value(
+    layer: SpectrumLayer,
+    field: str,
+    *,
+    temperature_unit: str | None = None,
+) -> float | None:
     if field == "frame":
         return None if layer.frame_index is None else float(layer.frame_index)
     if field == "time":
         return layer.time_s
     if field == "temperature":
-        return layer.temperature
+        if temperature_unit is None:
+            return layer.temperature
+        return _convert_temperature(layer.temperature, layer.temperature_unit, temperature_unit)
     if field == "color_value":
         return layer.color_value
     return float(layer.order)
 
 
-def assign_gradient_colors(layers: Iterable[SpectrumLayer], *, colormap: str = "blue_rose") -> None:
+def assign_gradient_colors(layers: Iterable[SpectrumLayer], *, colormap: str = "cividis") -> None:
     layers = list(layers)
     values = [layer.color_value for layer in layers if layer.color_value is not None and math.isfinite(layer.color_value)]
     if not values:
+        for layer in layers:
+            layer.color = PLOT_MUTED_COLOR
         return
     vmin = min(values)
     vmax = max(values)
     cmap = matplotlib_colormap(colormap)
     for layer in layers:
-        value = layer.color_value if layer.color_value is not None else float(layer.order)
-        layer.color = color_for_value(value, vmin, vmax, colormap=colormap, cmap=cmap)
+        if layer.color_value is None or not math.isfinite(layer.color_value):
+            layer.color = PLOT_MUTED_COLOR
+        else:
+            layer.color = color_for_value(layer.color_value, vmin, vmax, colormap=colormap, cmap=cmap)
 
 
-def color_for_value(value: float, vmin: float, vmax: float, *, colormap: str = "blue_rose", cmap=None) -> str:
+def color_for_value(value: float | None, vmin: float, vmax: float, *, colormap: str = "cividis", cmap=None) -> str:
     cmap = cmap or matplotlib_colormap(colormap)
-    if not math.isfinite(value):
-        value = vmin
+    if value is None or not math.isfinite(value):
+        return PLOT_MUTED_COLOR
     fraction = 0.5 if vmin == vmax else (value - vmin) / (vmax - vmin)
     fraction = min(max(fraction, 0.0), 1.0)
     from matplotlib.colors import to_hex
@@ -124,6 +148,7 @@ def make_heatmap_matrix(state: ProjectState) -> tuple[np.ndarray, np.ndarray, np
     x_grid = np.linspace(x_min, x_max, settings.heatmap_points)
     rows: list[np.ndarray] = []
     row_values: list[float] = []
+    temperature_unit = single_temperature_unit(layers) if settings.sort_by == "temperature" else None
     for index, layer in enumerate(layers):
         converted_x = convert_x(layer.x, layer.axis_kind, settings.x_axis, settings.energy_kev)
         transformed_y = transform_intensity(
@@ -142,20 +167,23 @@ def make_heatmap_matrix(state: ProjectState) -> tuple[np.ndarray, np.ndarray, np
         else:
             x_values, y_values = zip(*pairs)
             rows.append(np.interp(x_grid, np.asarray(x_values), np.asarray(y_values), left=np.nan, right=np.nan))
-        row_value = layer_batch_value(layer, settings.sort_by)
-        row_values.append(float(row_value if row_value is not None else index))
+        row_value = layer_batch_value(layer, settings.sort_by, temperature_unit=temperature_unit)
+        row_values.append(float(row_value) if row_value is not None else float("nan"))
 
     return x_grid, np.asarray(row_values, dtype=float), np.vstack(rows)
 
 
-def colorbar_label(field: str) -> str:
-    return {
+def colorbar_label(field: str, *, temperature_unit: str | None = None) -> str:
+    label = {
         "frame": "Frame",
         "time": "Time (s)",
         "temperature": "Temperature",
         "color_value": "Value",
         "order": "Order",
     }.get(field, field)
+    if field == "temperature" and temperature_unit:
+        label = f"{label} ({_display_temperature_unit(temperature_unit)})"
+    return label
 
 
 def matplotlib_colormap(name: str):
@@ -167,7 +195,54 @@ def matplotlib_colormap(name: str):
     try:
         return colormaps.get_cmap(name)
     except ValueError:
-        return colormaps.get_cmap("viridis")
+        return colormaps.get_cmap("cividis")
+
+
+def single_temperature_unit(layers: Iterable[SpectrumLayer]) -> str | None:
+    """Return the safe unit for temperature ordering, coloring, and display.
+
+    Mixed Celsius/Kelvin series are normalized to Kelvin.  An empty string
+    marks non-finite values or missing/unknown units so callers can fail closed
+    instead of comparing physically incompatible raw numbers.
+    """
+
+    temperature_layers = [layer for layer in layers if layer.temperature is not None]
+    if not temperature_layers:
+        return None
+    if any(not math.isfinite(layer.temperature) for layer in temperature_layers):
+        return ""
+    units = {_display_temperature_unit(layer.temperature_unit) for layer in temperature_layers}
+    if units == {""}:
+        # Preserve the historical unitless workflow while keeping its label
+        # explicitly unitless.  Mixing unitless values with declared units is
+        # rejected below because those values cannot be compared safely.
+        return None
+    if not units or not units <= {"°C", "K"}:
+        return ""
+    return "°C" if units == {"°C"} else "K"
+
+
+def _convert_temperature(value: float | None, source_unit: str, target_unit: str) -> float | None:
+    if value is None or not math.isfinite(value):
+        return None
+    source = _display_temperature_unit(source_unit)
+    target = _display_temperature_unit(target_unit)
+    if source not in {"°C", "K"} or target not in {"°C", "K"}:
+        return None
+    if source == target:
+        return float(value)
+    if source == "°C" and target == "K":
+        return float(value) + 273.15
+    return float(value) - 273.15
+
+
+def _display_temperature_unit(unit: str) -> str:
+    normalized = str(unit).strip().upper()
+    if normalized in {"DEGC", "°C", "C"}:
+        return "°C"
+    if normalized == "K":
+        return "K"
+    return str(unit).strip()
 
 
 def _parse_frame_index(stem: str) -> int | None:
@@ -201,8 +276,13 @@ def _parse_temperature(stem: str) -> tuple[float | None, str]:
     return float(match.group("value")), unit
 
 
-def _sort_key(layer: SpectrumLayer, sort_by: str) -> tuple[int, float, str]:
-    value = layer_batch_value(layer, sort_by)
+def _sort_key(
+    layer: SpectrumLayer,
+    sort_by: str,
+    *,
+    temperature_unit: str | None = None,
+) -> tuple[int, float, str]:
+    value = layer_batch_value(layer, sort_by, temperature_unit=temperature_unit)
     if value is None or not math.isfinite(value):
         return (1, float(layer.order), layer.name)
     return (0, float(value), layer.name)

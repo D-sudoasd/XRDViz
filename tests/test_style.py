@@ -30,6 +30,12 @@ class NatureStyleTests(unittest.TestCase):
         self.assertNotEqual(PLOT_AXIS_COLOR, "#000000")
         self.assertNotEqual(PLOT_TEXT_COLOR, "#000000")
 
+    def test_default_continuous_colormap_is_cividis_with_blue_rose_legacy(self):
+        from xrdviz.batch import matplotlib_colormap
+
+        self.assertEqual(PlotSettings().colormap, "cividis")
+        self.assertEqual(matplotlib_colormap("blue_rose").name, "xrdviz_blue_rose")
+
     def test_science_templates_and_named_preset_application(self):
         from xrdviz.plot.style import SCIENCE_SINGLE_WIDTH_IN, apply_publication_preset, science_single_column
 

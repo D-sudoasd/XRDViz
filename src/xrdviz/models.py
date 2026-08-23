@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -174,7 +175,7 @@ class PlotSettings:
     log_epsilon: float = 1e-9
     stack_enabled: bool = False
     stack_spacing: float = 0.3
-    figure_width_in: float = 3.50394
+    figure_width_in: float = 89.0 / 25.4
     figure_height_in: float = 2.35
     dpi: int = 600
     font_family: str = "Arial"
@@ -190,7 +191,9 @@ class PlotSettings:
     view_mode: str = "overlay"
     sort_by: str = "frame"
     color_by: str = "frame"
-    colormap: str = "blue_rose"
+    # ``cividis`` is the default continuous map for quantitative views.
+    # ``blue_rose`` remains available as the legacy publication palette.
+    colormap: str = "cividis"
     show_colorbar: bool = False
     show_every_n: int = 1
     heatmap_points: int = 600
@@ -203,26 +206,49 @@ class PlotSettings:
 
     def __post_init__(self) -> None:
         self.x_axis = normalize_axis_kind(self.x_axis)
-        if self.energy_kev <= 0:
+        if not math.isfinite(float(self.energy_kev)) or self.energy_kev <= 0:
             raise ValueError("Energy must be positive")
-        if self.log_epsilon <= 0:
+        if not math.isfinite(float(self.log_epsilon)) or self.log_epsilon <= 0:
             raise ValueError("Log epsilon must be positive")
-        if self.figure_width_in <= 0 or self.figure_height_in <= 0:
+        if (
+            not math.isfinite(float(self.figure_width_in))
+            or not math.isfinite(float(self.figure_height_in))
+            or self.figure_width_in <= 0
+            or self.figure_height_in <= 0
+        ):
             raise ValueError("Figure dimensions must be positive")
-        if self.dpi <= 0:
+        if not math.isfinite(float(self.dpi)) or self.dpi <= 0:
             raise ValueError("DPI must be positive")
+        if self.x_min is not None and not math.isfinite(float(self.x_min)):
+            raise ValueError("x_min must be finite")
+        if self.x_max is not None and not math.isfinite(float(self.x_max)):
+            raise ValueError("x_max must be finite")
         if self.x_min is not None and self.x_max is not None and self.x_min >= self.x_max:
             raise ValueError("x_min must be smaller than x_max")
+        for field_name, value in (
+            ("stack_spacing", self.stack_spacing),
+            ("font_size", self.font_size),
+            ("axis_label_size", self.axis_label_size),
+            ("tick_label_size", self.tick_label_size),
+            ("line_width", self.line_width),
+            ("bragg_band_height", self.bragg_band_height),
+        ):
+            if not math.isfinite(float(value)):
+                raise ValueError(f"{field_name} must be finite")
         if self.view_mode not in VIEW_MODES:
             raise ValueError(f"Unsupported view mode: {self.view_mode!r}")
         if self.sort_by not in BATCH_FIELDS:
             raise ValueError(f"Unsupported sort field: {self.sort_by!r}")
         if self.color_by not in BATCH_FIELDS:
             raise ValueError(f"Unsupported color field: {self.color_by!r}")
-        if self.show_every_n < 1:
+        show_every_n = float(self.show_every_n)
+        if not math.isfinite(show_every_n) or not show_every_n.is_integer() or show_every_n < 1:
             raise ValueError("show_every_n must be at least 1")
-        if self.heatmap_points < 2:
+        self.show_every_n = int(show_every_n)
+        heatmap_points = float(self.heatmap_points)
+        if not math.isfinite(heatmap_points) or not heatmap_points.is_integer() or heatmap_points < 2:
             raise ValueError("heatmap_points must be at least 2")
+        self.heatmap_points = int(heatmap_points)
         if self.legend_location not in LEGEND_LOCATIONS:
             raise ValueError(f"Unsupported legend location: {self.legend_location!r}")
         if not (0.0 <= self.margin_left < self.margin_right <= 1.0):

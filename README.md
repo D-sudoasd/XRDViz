@@ -1,6 +1,6 @@
 # XRDViz
 
-XRDViz is a source-run Python/Qt desktop application for plotting one-dimensional XRD spectra.
+XRDViz is a Python/Qt desktop application for turning one-dimensional XRD spectra into clear, traceable publication figures.
 
 ## Features
 
@@ -12,9 +12,24 @@ XRDViz is a source-run Python/Qt desktop application for plotting one-dimensiona
 - Import `sample_labels.csv` to control sample labels, order, colors, visibility, and offsets.
 - Import `reference_peaks.csv` or simple Rigaku-style `peaks.csv` files as reference phase markers.
 - Show phase-specific marker symbols, guide lines, direct curve labels, compact phase legends, and a reference peak table.
-- Apply Nature single/double, Science single/double, or custom publication templates with adjustable legend placement, fonts, dimensions, and margins.
-- Export publication-oriented figures as PDF, SVG, PNG, or TIFF, including batch heatmaps with colorbars.
-- Export a publication bundle with the figure, cleaned data, reference peak table, and reproducibility report.
+- Apply exact 89 mm / 183 mm Nature presets, Science presets, or custom templates with adjustable legend placement, fonts, dimensions, and margins.
+- Pan, zoom, reset, and inspect the live plot with the built-in navigation toolbar.
+- See a permanent Nature preflight status while editing; invalid numeric input leaves the last valid plot visible and reports the field that needs attention.
+- Export line plots as editable PDF/SVG or opaque RGB PNG/TIFF at the configured resolution (600 dpi in the Nature presets).
+- Export a traceable publication bundle with four figure formats, cleaned data, a reference peak table, a restorable project snapshot, a report, and a SHA-256 manifest.
+
+## Nature-oriented export
+
+The Nature presets use Arial, 5--7 pt typography, restrained line weights, exact 89 mm (single-column) or 183 mm (double-column) widths, and 600 dpi raster output. Quantitative heatmaps and gradients default to the perceptually uniform, color-vision-friendly Cividis map. Mixed Celsius/Kelvin series are compared in Kelvin; a mixed series that combines declared and missing or unknown units fails closed instead of receiving a misleading scale. Missing time or temperature metadata remains missing and is shown as `n/a` or muted gray rather than being replaced by acquisition order.
+
+For ordinary line plots, PDF and SVG retain vector paths and editable text. Heatmaps necessarily embed raster image content inside PDF/SVG and are therefore reported as combination/raster figures; XRDViz does not label them as all-vector. The in-app preflight checks configuration and visible data, but it is not a guarantee of editorial acceptance. See Nature's current [figure construction and export guide](https://research-figure-guide.nature.com/figures/building-and-exporting-figure-panels/) and the journal's [initial submission guidance](https://www.nature.com/nature/for-authors/initial-submission).
+
+The publication bundle contains:
+
+- `<name>.pdf`, `<name>.svg`, `<name>.tiff`, and `<name>.png`
+- `cleaned_xrd_data.csv` and `reference_peak_table.csv`
+- `project.xrdviz.json`, which can be reopened in XRDViz
+- `xrd_plot_report.md` and `publication_manifest.json`, including output hashes and source-file status
 
 ## Batch and In-situ Workflow
 
@@ -29,7 +44,7 @@ The **Batch** tab controls:
 - sort/color fields: frame, time, temperature, or current order
 - colormap, colorbar, show every N spectra, and heatmap sampling points
 
-The publication bundle report records these batch settings and each spectrum's inferred metadata.
+The publication bundle report records these batch settings and each spectrum's inferred metadata. Heatmap row labels are always shown, sparsified to a readable set for long series, and include the first and last frame.
 
 ## CSV Helpers
 
@@ -54,8 +69,8 @@ position,label,phase,intensity,hkl,source_axis,color,shape
 ## Run
 
 ```powershell
-python -m pip install -e .
-python -m xrdviz
+py -3.12 -m pip install -e .
+py -3.12 -m xrdviz
 ```
 
-The first version is designed for source execution rather than Windows executable packaging.
+XRDViz is currently distributed for source execution rather than as a Windows executable.

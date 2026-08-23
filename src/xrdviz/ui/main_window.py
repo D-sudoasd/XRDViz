@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Callable
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
 from xrdviz.calibration import auto_calibrate_phases
 from xrdviz.batch import apply_batch_metadata
 from xrdviz.cif import load_cif_phase
+from xrdviz.compliance import nature_compliance_issues
 from xrdviz.io import (
     apply_sample_metadata,
     load_reference_peaks_csv_many,
@@ -122,13 +124,21 @@ class MainWindow(QMainWindow):
     def _build_layout(self) -> None:
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._layers_panel())
-        splitter.addWidget(self.canvas)
+        self.plot_panel = QWidget()
+        plot_layout = QVBoxLayout(self.plot_panel)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        self.navigation_toolbar = NavigationToolbar2QT(self.canvas, self)
+        plot_layout.addWidget(self.navigation_toolbar)
+        plot_layout.addWidget(self.canvas, stretch=1)
+        splitter.addWidget(self.plot_panel)
         splitter.addWidget(self._properties_panel())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         splitter.setSizes([250, 780, 300])
         self.setCentralWidget(splitter)
+        self.nature_status_label = QLabel("Nature: checking...")
+        self.statusBar().addPermanentWidget(self.nature_status_label)
 
     def _layers_panel(self) -> QWidget:
         panel = QWidget()
@@ -217,7 +227,8 @@ class MainWindow(QMainWindow):
         self.stack_spacing_spin = _double_spin(0.0, 10.0, 3)
         form.addRow("Stack spacing", self.stack_spacing_spin)
 
-        self.width_spin = _double_spin(1.0, 20.0, 3)
+        self.width_spin = _double_spin(1.0, 20.0, 5)
+        self.width_spin.setSingleStep(0.01)
         self.width_spin.setSuffix(" in")
         self.height_spin = _double_spin(1.0, 20.0, 3)
         self.height_spin.setSuffix(" in")
@@ -329,12 +340,12 @@ class MainWindow(QMainWindow):
         )
         self.colormap_combo = _field_combo(
             [
-                ("Blue rose", "blue_rose"),
+                ("Cividis", "cividis"),
                 ("Viridis", "viridis"),
                 ("Plasma", "plasma"),
                 ("Magma", "magma"),
-                ("Cividis", "cividis"),
-                ("Turbo", "turbo"),
+                ("Blue rose (Legacy)", "blue_rose"),
+                ("Turbo (Screen only)", "turbo"),
             ]
         )
         self.show_colorbar_check = QCheckBox("Show colorbar")
@@ -429,6 +440,8 @@ class MainWindow(QMainWindow):
                 control.currentIndexChanged.connect(lambda *_args: self._axis_changed())
             elif control is self.template_combo:
                 control.currentIndexChanged.connect(lambda *_args: self._template_changed())
+            elif control is self.view_mode_combo:
+                control.currentIndexChanged.connect(lambda *_args: self._view_mode_changed())
             elif control in (self.sort_by_combo, self.color_by_combo, self.colormap_combo):
                 control.currentIndexChanged.connect(lambda *_args: self._batch_controls_changed())
             elif isinstance(control, QComboBox):
@@ -437,6 +450,18 @@ class MainWindow(QMainWindow):
                 signal = control.stateChanged if isinstance(control, QCheckBox) else control.valueChanged
                 signal.connect(lambda *_args: self.render())
         self.layer_table.itemChanged.connect(self._layer_item_changed)
+
+    def _view_mode_changed(self) -> None:
+        self._update_batch_control_state()
+        self.render()
+
+    def _update_batch_control_state(self) -> None:
+        mode = self.view_mode_combo.currentData()
+        self.heatmap_points_spin.setEnabled(mode == "heatmap")
+        self.color_by_combo.setEnabled(mode == "gradient_stack")
+        enabled = mode in {"gradient_stack", "heatmap"}
+        self.colormap_combo.setEnabled(enabled)
+        self.show_colorbar_check.setEnabled(enabled)
 
     def _axis_changed(self) -> None:
         axis_kind = self.x_axis_combo.currentData()
@@ -597,13 +622,18 @@ class MainWindow(QMainWindow):
             for order, layer in enumerate(self.state.spectra):
                 layer.order = order
         self.refresh_layers()
-        self.layer_table.selectRow(new_index)
+        selected_row = new_index if kind == "spectrum" else len(self.state.spectra) + new_index
+        self.layer_table.selectRow(selected_row)
         self.refresh_peak_table()
         self.render()
 
     def apply_preset(self, preset: str) -> None:
-        settings = self._settings_from_controls()
-        self.state.settings = apply_publication_preset(settings, preset)
+        try:
+            settings = self._settings_from_controls()
+            self.state.settings = apply_publication_preset(settings, preset)
+        except Exception as exc:  # noqa: BLE001 - surfaced to user
+            self._show_status(f"Preset not applied: {exc}", timeout=8000)
+            return
         self._sync_controls_from_settings()
         self.render()
 
@@ -629,11 +659,13 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        self.state.settings = self._settings_from_controls()
         try:
+            self.state.settings = self._settings_from_controls()
             save_project(self.state, path)
         except Exception as exc:  # noqa: BLE001 - surfaced to user
             QMessageBox.critical(self, "Save project failed", str(exc))
+        else:
+            self._show_status(f"Project saved: {Path(path).name}")
 
     def export_figure(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -644,20 +676,32 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        self.state.settings = self._settings_from_controls()
         try:
+            self.state.settings = self._settings_from_controls()
             export_project(self.state, path)
         except Exception as exc:  # noqa: BLE001 - surfaced to user
+            self._show_status(f"Figure export failed: {exc}", timeout=8000)
             QMessageBox.critical(self, "Export failed", str(exc))
+        else:
+            self._show_status(f"Figure exported: {Path(path).name}")
 
     def export_publication_bundle_dialog(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Export publication bundle")
-        if folder:
+        if not folder:
+            return
+        try:
             self.export_publication_bundle_to(Path(folder))
+        except Exception as exc:  # noqa: BLE001 - surfaced to user
+            self._show_status(f"Publication bundle export failed: {exc}", timeout=8000)
+            QMessageBox.critical(self, "Publication bundle export failed", str(exc))
 
     def export_publication_bundle_to(self, output_dir: str | Path):
+        """Export to ``output_dir``; dialog callers surface any raised error."""
+
         self.state.settings = self._settings_from_controls()
-        return export_publication_bundle(self.state, output_dir)
+        outputs = export_publication_bundle(self.state, output_dir)
+        self._show_status(f"Publication bundle exported: {Path(output_dir).name or Path(output_dir)}")
+        return outputs
 
     def auto_fit_phase_peaks(self) -> None:
         try:
@@ -676,9 +720,16 @@ class MainWindow(QMainWindow):
             return
         from xrdviz.publication import export_peak_table
 
-        output = export_peak_table(self.state, Path(path).parent)
-        if output != Path(path):
-            Path(path).write_text(output.read_text(encoding="utf-8"), encoding="utf-8")
+        try:
+            self.state.settings = self._settings_from_controls()
+            output = export_peak_table(self.state, Path(path).parent)
+            if output != Path(path):
+                Path(path).write_text(output.read_text(encoding="utf-8"), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - surfaced to user
+            self._show_status(f"Peak table export failed: {exc}", timeout=8000)
+            QMessageBox.critical(self, "Peak table export failed", str(exc))
+        else:
+            self._show_status(f"Peak table exported: {Path(path).name}")
 
     def refresh_layers(self) -> None:
         self._refreshing_layers = True
@@ -771,12 +822,25 @@ class MainWindow(QMainWindow):
             self.state.settings = self._settings_from_controls()
             render_project(self.state, self.figure)
         except Exception as exc:  # noqa: BLE001 - surfaced to user
-            self.figure.clear()
-            ax = self.figure.add_subplot(111)
-            ax.text(0.5, 0.5, str(exc), ha="center", va="center", wrap=True)
-            ax.set_axis_off()
+            self._show_status(f"Plot not updated: {exc}", timeout=8000)
+            self._update_nature_status()
+            return
         self.canvas.draw_idle()
         self.refresh_peak_table()
+        self._update_nature_status()
+
+    def _show_status(self, message: str, *, timeout: int = 6000) -> None:
+        self.statusBar().showMessage(message, timeout)
+
+    def _update_nature_status(self) -> None:
+        try:
+            issues = nature_compliance_issues(self.state)
+        except Exception as exc:  # noqa: BLE001 - compliance should not break plotting
+            issues = [str(exc)]
+        self.nature_status_label.setText("Nature: ready" if not issues else f"Nature: {len(issues)} issue(s)")
+        self.nature_status_label.setToolTip(
+            "Nature publication checks passed." if not issues else "Nature compliance issues:\n" + "\n".join(issues)
+        )
 
     def _add_spectra(self, paths: list[Path]) -> None:
         axis_kind = self.input_axis_combo.currentData()
@@ -794,7 +858,7 @@ class MainWindow(QMainWindow):
             return
         sort_by = self.sort_by_combo.currentData() if hasattr(self, "sort_by_combo") else "frame"
         color_by = self.color_by_combo.currentData() if hasattr(self, "color_by_combo") else "frame"
-        colormap = self.colormap_combo.currentData() if hasattr(self, "colormap_combo") else "blue_rose"
+        colormap = self.colormap_combo.currentData() if hasattr(self, "colormap_combo") else "cividis"
         apply_batch_metadata(self.state.spectra, sort_by=sort_by, color_by=color_by, colormap=colormap)
 
     def _add_cifs(self, paths: list[Path]) -> None:
@@ -813,8 +877,8 @@ class MainWindow(QMainWindow):
             x_label=self.x_label_edit.text().strip() or default_axis_label(self.x_axis_combo.currentData()),
             y_label=self.y_label_edit.text().strip() or "Intensity (a.u.)",
             panel_title=self.panel_title_edit.text().strip(),
-            x_min=_optional_float(self.x_min_edit.text()),
-            x_max=_optional_float(self.x_max_edit.text()),
+            x_min=_optional_float(self.x_min_edit.text(), "X min"),
+            x_max=_optional_float(self.x_max_edit.text(), "X max"),
             normalize=self.normalize_check.isChecked(),
             log_scale=self.log_check.isChecked(),
             stack_enabled=self.stack_check.isChecked(),
@@ -882,6 +946,7 @@ class MainWindow(QMainWindow):
             was_blocked = widget.blockSignals(True)
             setter()
             widget.blockSignals(was_blocked)
+        self._update_batch_control_state()
 
 
 def _axis_combo(*, include_auto: bool = False) -> QComboBox:
@@ -916,11 +981,17 @@ def _double_spin(minimum: float, maximum: float, decimals: int) -> QDoubleSpinBo
     return spin
 
 
-def _optional_float(text: str) -> float | None:
+def _optional_float(text: str, field_name: str = "Value") -> float | None:
     stripped = text.strip()
     if not stripped:
         return None
-    return float(stripped)
+    try:
+        value = float(stripped)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a number.") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{field_name} must be a finite number.")
+    return value
 
 
 def _format_table_value(value: object) -> str:

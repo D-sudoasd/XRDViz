@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xrdviz"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop XRD one-dimensional spectrum plotting tool for publication figures."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
     "matplotlib>=3.8",
+    "Pillow>=10.0",
     "PySide6>=6.6",
     "pymatgen>=2024.1",
 ]

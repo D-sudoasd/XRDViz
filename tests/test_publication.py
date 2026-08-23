@@ -1,4 +1,6 @@
 import csv
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -7,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from xrdviz.models import PhaseLayer, PhasePeak, PlotSettings, ProjectState, SpectrumLayer
+from xrdviz.project import load_project
 from xrdviz.publication import (
     export_cleaned_data,
     export_publication_bundle,
@@ -152,6 +155,101 @@ class PublicationWorkflowTests(unittest.TestCase):
         self.assertIn("- legend location: outside right", text)
         self.assertIn("frame=1", text)
         self.assertIn("temperature=300", text)
+
+    def test_bundle_manifest_records_all_hashes_and_project_snapshot_round_trips(self):
+        state = ProjectState(
+            spectra=[SpectrumLayer(name="S1", x=[20.0, 30.0], y=[1.0, 2.0], source_path="missing.xy")],
+            settings=PlotSettings(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outputs = export_publication_bundle(state, root, figure_name="main.svg")
+            manifest = json.loads(outputs.manifest.read_text(encoding="utf-8"))
+            expected = {
+                "main.pdf",
+                "main.svg",
+                "main.tiff",
+                "main.png",
+                "cleaned_xrd_data.csv",
+                "reference_peak_table.csv",
+                "project.xrdviz.json",
+                "publication_manifest.json",
+                "xrd_plot_report.md",
+            }
+            self.assertEqual({path.name for path in root.iterdir()}, expected)
+            self.assertEqual(
+                set(manifest),
+                {"application", "target", "nature", "figures", "artifacts", "sources", "manifest"},
+            )
+            for record in [*manifest["figures"], *manifest["artifacts"]]:
+                path = root / record["path"]
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                self.assertEqual(record["sha256"], digest)
+            restored = load_project(outputs.project)
+            self.assertEqual(restored.spectra[0].name, state.spectra[0].name)
+            self.assertEqual(manifest["nature"]["issues"], [])
+            self.assertEqual(manifest["manifest"]["path"], "publication_manifest.json")
+
+    def test_bundle_rejects_absolute_and_parent_escaping_figure_names(self):
+        state = ProjectState(
+            spectra=[SpectrumLayer(name="S1", x=[1.0], y=[2.0])],
+            settings=PlotSettings(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValueError):
+                export_publication_bundle(state, root, figure_name=str(root / "outside.svg"))
+            with self.assertRaises(ValueError):
+                export_publication_bundle(state, root, figure_name="..\\outside.svg")
+            with self.assertRaises(ValueError):
+                export_publication_bundle(state, root, figure_name="\\outside.svg")
+            with self.assertRaises(ValueError):
+                export_publication_bundle(state, root, figure_name="C:outside.svg")
+
+    def test_bundle_rejects_symlinked_output_directory_escape(self):
+        state = ProjectState(
+            spectra=[SpectrumLayer(name="S1", x=[1.0, 2.0], y=[2.0, 3.0])],
+            settings=PlotSettings(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside_tmp:
+            root = Path(tmp)
+            link = root / "linked"
+            try:
+                link.symlink_to(Path(outside_tmp), target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlinks are unavailable: {exc}")
+            with self.assertRaises(ValueError):
+                export_publication_bundle(state, root, figure_name="linked/figure.svg")
+
+    def test_bundle_manifest_fails_unknown_mixed_temperature_units(self):
+        state = ProjectState(
+            spectra=[
+                SpectrumLayer(
+                    name="declared",
+                    x=[20.0, 30.0],
+                    y=[1.0, 2.0],
+                    temperature=25.0,
+                    temperature_unit="C",
+                ),
+                SpectrumLayer(
+                    name="unitless",
+                    x=[20.0, 30.0],
+                    y=[2.0, 1.0],
+                    temperature=300.0,
+                ),
+            ],
+            settings=PlotSettings(view_mode="gradient_stack", color_by="temperature"),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = export_publication_bundle(state, Path(tmp), figure_name="mixed.svg")
+            manifest = json.loads(outputs.manifest.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["nature"]["status"], "FAIL")
+        self.assertTrue(any("compatible °C or K" in issue for issue in manifest["nature"]["issues"]))
 
 
 if __name__ == "__main__":
