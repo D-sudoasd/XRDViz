@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from xrdviz.models import PlotSettings, SpectrumLayer
-from xrdviz.transforms import display_y_for_layer, transform_intensity
+from xrdviz.transforms import display_uncertainty_for_layer, display_y_for_layer, transform_intensity
 
 
 class DisplayTransformTests(unittest.TestCase):
@@ -32,6 +32,21 @@ class DisplayTransformTests(unittest.TestCase):
         self.assertEqual(y[0], -2.0)
         self.assertEqual(y[1], -2.0)
         self.assertEqual(y[2], 1.0)
+
+    def test_uncertainty_uses_the_same_normalization_and_stack_offset_as_the_curve(self):
+        layer = SpectrumLayer(
+            name="a",
+            x=[1.0, 2.0],
+            y=[10.0, 20.0],
+            y_error=[1.0, 2.0],
+            offset=0.25,
+        )
+        settings = PlotSettings(normalize=True, stack_enabled=True, stack_spacing=0.5)
+
+        lower, upper = display_uncertainty_for_layer(layer, settings, layer_index=2)
+
+        self.assertEqual(lower, [1.7, 2.15])
+        self.assertEqual(upper, [1.8, 2.35])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,27 +20,75 @@ from xrdviz.batch import (
 )
 from xrdviz.cif import phase_peak_position_for_axis
 from xrdviz.models import PLOT_AXIS_COLOR, PLOT_MUTED_COLOR, PLOT_TEXT_COLOR, ProjectState, default_axis_label
+from xrdviz.plot.derived_renderer import render_derived
+from xrdviz.plot.map_renderer import render_map
+from xrdviz.plot.spectrum_extras import (
+    draw_annotations,
+    draw_inset,
+    layer_energy_kev,
+    render_small_multiples,
+)
 from xrdviz.plot.style import apply_matplotlib_style
-from xrdviz.transforms import display_y_for_layer
+from xrdviz.transforms import display_uncertainty_for_layer, display_y_for_layer
 
 
-def render_project(state: ProjectState, figure: Any | None = None) -> tuple[Any, dict[str, Any]]:
+def render_project(
+    state: ProjectState,
+    figure: Any | None = None,
+    *,
+    preview_size: tuple[int, int] | None = None,
+) -> tuple[Any, dict[str, Any]]:
+    """Render a project into a Matplotlib figure.
+
+    ``preview_size`` is reserved for interactive canvases.  It keeps the
+    figure raster close to the widget's logical pixel size so a live preview
+    does not allocate the publication raster (for example, 600 dpi) and then
+    get clipped by Qt.  The default path remains publication-facing and uses
+    the exact physical size and DPI from ``PlotSettings``.
+    """
     Figure = _figure_class()
+    if figure is None:
+        fig = Figure()
+        return _render_project_inplace(state, fig, preview_size=preview_size)
+
+    # Render into an isolated figure first.  A malformed import or an
+    # unavailable view must not clear the live canvas; only a complete render
+    # is committed to the caller's Figure below.
+    staged = Figure()
+    rendered, axes = _render_project_inplace(state, staged, preview_size=preview_size)
+    _adopt_figure_contents(rendered, figure)
+    return figure, axes
+
+
+def _render_project_inplace(
+    state: ProjectState,
+    fig: Any,
+    *,
+    preview_size: tuple[int, int] | None,
+) -> tuple[Any, dict[str, Any]]:
     settings = state.settings
     apply_matplotlib_style(settings)
     _validate_outside_legend_layout(state)
 
-    fig = (
-        figure
-        if figure is not None
-        else Figure(figsize=(settings.figure_width_in, settings.figure_height_in), dpi=settings.dpi)
-    )
-    # A caller may reuse a Figure for previews.  Keep its physical canvas and
-    # raster resolution in sync with the current project settings before
-    # clearing and rebuilding the axes.
-    fig.set_size_inches(settings.figure_width_in, settings.figure_height_in, forward=True)
-    fig.set_dpi(settings.dpi)
+    _configure_figure(fig, settings, preview_size=preview_size)
     fig.clear()
+
+    if settings.view_mode == "map":
+        rendered_fig, axes = render_map(state, fig)
+        axes["text_alternative"] = rendered_view_text_alternative(state)
+        return rendered_fig, axes
+    if settings.view_mode == "derived":
+        rendered_fig, axes = render_derived(state, fig)
+        axes["text_alternative"] = rendered_view_text_alternative(state)
+        return rendered_fig, axes
+    if settings.view_mode == "small_multiples":
+        rendered_fig, axes = render_small_multiples(state, fig)
+        axes["text_alternative"] = rendered_view_text_alternative(state)
+        return rendered_fig, axes
+    if settings.view_mode == "refinement":
+        rendered_fig, axes = _render_refinement(state, fig)
+        axes["text_alternative"] = rendered_view_text_alternative(state)
+        return rendered_fig, axes
 
     main_ax = fig.add_subplot(111)
     main_ax.set_facecolor("white")
@@ -53,7 +102,9 @@ def render_project(state: ProjectState, figure: Any | None = None) -> tuple[Any,
         if colorbar_ax is not None:
             axes["colorbar"] = colorbar_ax
     else:
-        spectrum_handles, colorbar_ax = _draw_spectra(main_ax, state, fig)
+        spectrum_handles, colorbar_ax, uncertainty_artists = _draw_spectra(main_ax, state, fig)
+        if uncertainty_artists:
+            axes["uncertainty"] = uncertainty_artists
         if colorbar_ax is not None:
             axes["colorbar"] = colorbar_ax
         x_range, exact_x_range = _display_x_range(state)
@@ -63,6 +114,12 @@ def render_project(state: ProjectState, figure: Any | None = None) -> tuple[Any,
 
     x_range, exact_x_range = _display_x_range(state)
     _apply_x_range(main_ax, x_range, exact=exact_x_range)
+
+    annotation_artists = draw_annotations(main_ax, state)
+    if annotation_artists:
+        axes["annotations"] = annotation_artists
+    if settings.inset_enabled and settings.inset_x_min is not None and settings.inset_x_max is not None:
+        axes["inset"] = draw_inset(main_ax, state)
 
     main_ax.set_xlabel(settings.x_label or default_axis_label(settings.x_axis))
     metadata_layers = select_spectrum_layers(state.spectra, show_every_n=settings.show_every_n)
@@ -90,20 +147,412 @@ def render_project(state: ProjectState, figure: Any | None = None) -> tuple[Any,
         top=settings.margin_top,
         bottom=settings.margin_bottom,
     )
+    axes["text_alternative"] = rendered_view_text_alternative(state)
     return fig, axes
+
+
+def _configure_figure(
+    fig: Any,
+    settings: Any,
+    *,
+    preview_size: tuple[int, int] | None,
+) -> None:
+    if preview_size is None:
+        # Keep publication-facing callers and export contracts tied to the
+        # exact physical canvas requested by the project.
+        fig.set_size_inches(settings.figure_width_in, settings.figure_height_in, forward=True)
+        fig.set_dpi(settings.dpi)
+        return
+    preview_width, preview_height = (int(value) for value in preview_size)
+    if preview_width < 1 or preview_height < 1:
+        raise ValueError("preview_size must contain positive pixel dimensions")
+    # Fit the requested screen box while preserving the publication aspect;
+    # the Qt wrapper centers this smaller figure in the available canvas.
+    aspect = float(settings.figure_width_in) / float(settings.figure_height_in)
+    if not math.isfinite(aspect) or aspect <= 0.0:
+        raise ValueError("Figure dimensions must be finite and positive")
+    if preview_width / preview_height > aspect:
+        fitted_width = max(1, int(round(preview_height * aspect)))
+        fitted_height = preview_height
+    else:
+        fitted_width = preview_width
+        fitted_height = max(1, int(round(preview_width / aspect)))
+    preview_dpi = 100.0
+    fig.set_dpi(preview_dpi)
+    fig.set_size_inches(fitted_width / preview_dpi, fitted_height / preview_dpi, forward=True)
+
+
+def _adopt_figure_contents(source: Any, target: Any) -> None:
+    """Commit a successfully rendered staged figure into a live Figure.
+
+    Matplotlib axes can be detached and re-attached to another Figure.  This
+    keeps the FigureCanvas and toolbar identity stable while ensuring a failed
+    staged render never mutates the visible figure.
+    """
+
+    source_axes = list(source.axes)
+    subplotpars = source.subplotpars
+    target.clear()
+    target.set_dpi(source.dpi)
+    target.set_size_inches(source.get_size_inches(), forward=True)
+    target.patch.set_facecolor(source.patch.get_facecolor())
+    target.patch.set_alpha(source.patch.get_alpha())
+    target.subplots_adjust(
+        left=subplotpars.left,
+        right=subplotpars.right,
+        bottom=subplotpars.bottom,
+        top=subplotpars.top,
+        wspace=subplotpars.wspace,
+        hspace=subplotpars.hspace,
+    )
+    for axis in source_axes:
+        axis.remove()
+        axis.set_figure(target)
+        target.add_axes(axis)
+
+
+def rendered_view_text_alternative(state: ProjectState) -> str:
+    """Return a concise, attachable text alternative for the active view."""
+
+    settings = state.settings
+    mode = settings.view_mode
+    if mode == "map" and state.map_data is not None:
+        data = state.map_data
+        intensity = np.asarray(data.intensity, dtype=float)
+        populated = np.isfinite(intensity)
+        if data.counts is not None:
+            populated &= np.asarray(data.counts, dtype=float) > 0.0
+        intensity_range = _accessible_range(intensity, populated)
+        return (
+            f"Map view ({data.kind}) with {len(data.y)} rows and {len(data.x)} columns; "
+            f"horizontal axis {data.x_label}, vertical axis {data.y_label}; "
+            f"populated {data.intensity_label} range {intensity_range}."
+        )
+    if mode == "derived" and state.derived_plot is not None:
+        data = state.derived_plot
+        points = len(data.scatter) if data.scatter else len(data.x)
+        metrics = ", ".join(f"{key}={value}" for key, value in data.metrics.items())
+        suffix = f" Metrics: {metrics}." if metrics else ""
+        return f"Derived {data.kind} view with {points} data points.{suffix}"
+    if mode == "refinement" and state.fit is not None:
+        observed = np.asarray(state.fit.observed, dtype=float)
+        calculated = np.asarray(state.fit.calculated, dtype=float)
+        residual = observed - calculated
+        metrics = []
+        if state.fit.rp is not None:
+            metrics.append(f"Rp={state.fit.rp:.4g} percent")
+        if state.fit.rwp is not None:
+            metrics.append(f"Rwp={state.fit.rwp:.4g} percent")
+        metric_text = f" Metrics: {', '.join(metrics)}." if metrics else ""
+        return (
+            f"Refinement view with {len(state.fit.x)} observed and calculated points; "
+            f"observed range {_accessible_range(observed)}, residual range "
+            f"{_accessible_range(residual)}.{metric_text}"
+        )
+    if mode == "small_multiples":
+        visible = sum(1 for layer in state.spectra if layer.visible)
+        return f"Small-multiples view with {visible} visible spectrum panels."
+    visible = sum(1 for layer in state.spectra if layer.visible)
+    finite_x = [
+        float(value)
+        for layer in state.spectra
+        if layer.visible
+        for value in layer.x
+        if math.isfinite(float(value))
+    ]
+    x_range = _accessible_range(np.asarray(finite_x, dtype=float))
+    return (
+        f"Spectrum view ({mode}) with {visible} visible spectrum lines; "
+        f"source-coordinate range {x_range}."
+    )
+
+
+def _accessible_range(values: np.ndarray, mask: np.ndarray | None = None) -> str:
+    """Format a finite numerical range without copying the selected values."""
+
+    array = np.asarray(values, dtype=float)
+    finite = np.isfinite(array)
+    if mask is not None:
+        finite &= np.asarray(mask, dtype=bool)
+    if not bool(np.any(finite)):
+        return "unavailable"
+    minimum = float(np.min(array, where=finite, initial=np.inf))
+    maximum = float(np.max(array, where=finite, initial=-np.inf))
+    return f"{minimum:.6g} to {maximum:.6g}"
+
+
+def _render_refinement(state: ProjectState, fig: Any) -> tuple[Any, dict[str, Any]]:
+    fit = state.fit
+    if fit is None:
+        raise ValueError("Refinement view requires an imported observed/calculated fit result")
+
+    settings = state.settings
+    grid = fig.add_gridspec(2, 1, height_ratios=(3.2, 1.0), hspace=0.05)
+    main_ax = fig.add_subplot(grid[0])
+    residual_ax = fig.add_subplot(grid[1], sharex=main_ax)
+    main_ax.set_facecolor("white")
+    residual_ax.set_facecolor("white")
+    axes: dict[str, Any] = {"main": main_ax, "bragg": main_ax, "residual": residual_ax}
+
+    x_values = convert_x(
+        fit.x,
+        fit.axis_kind,
+        settings.x_axis,
+        layer_energy_kev(fit, settings.energy_kev),
+    )
+    point_indices = [
+        index
+        for index, values in enumerate(zip(x_values, fit.observed, fit.calculated))
+        if all(math.isfinite(float(value)) for value in values)
+    ]
+    if not point_indices:
+        raise ValueError("Refinement result does not contain finite observed/calculated points")
+
+    x_clean = [x_values[index] for index in point_indices]
+    observed_raw = [fit.observed[index] for index in point_indices]
+    calculated_raw = [fit.calculated[index] for index in point_indices]
+    scale = max((value for value in observed_raw if value > 0), default=1.0) if settings.normalize else 1.0
+
+    def display_main(values: list[float]) -> list[float]:
+        displayed = [float(value) / scale for value in values]
+        if settings.log_scale:
+            displayed = [math.log10(max(value, settings.log_epsilon)) for value in displayed]
+        return displayed
+
+    observed = display_main(observed_raw)
+    calculated = display_main(calculated_raw)
+    observed_handle = main_ax.plot(
+        x_clean,
+        observed,
+        linestyle="None",
+        marker="o",
+        markersize=max(2.0, settings.line_width * 2.8),
+        markerfacecolor="none",
+        markeredgecolor=PLOT_TEXT_COLOR,
+        markeredgewidth=0.55,
+        label="Observed",
+        zorder=3,
+    )[0]
+    calculated_handle = main_ax.plot(
+        x_clean,
+        calculated,
+        color="#D62F53",
+        linewidth=max(settings.line_width, 0.75),
+        label="Calculated",
+        zorder=4,
+    )[0]
+    handles = [observed_handle, calculated_handle]
+
+    if settings.show_fit_background and fit.background:
+        background = display_main([fit.background[index] for index in point_indices])
+        handles.append(
+            main_ax.plot(
+                x_clean,
+                background,
+                color=PLOT_MUTED_COLOR,
+                linewidth=max(0.5, settings.line_width * 0.8),
+                linestyle="--",
+                label="Background",
+                zorder=2,
+            )[0]
+        )
+
+    if settings.show_fit_components:
+        for component_index, component in enumerate(fit.components):
+            component_values = display_main([component.y[index] for index in point_indices])
+            handles.append(
+                main_ax.plot(
+                    x_clean,
+                    component_values,
+                    color=component.color or _component_color(component_index),
+                    linewidth=max(0.5, settings.line_width * 0.8),
+                    linestyle="--",
+                    alpha=0.9,
+                    label=component.name,
+                    zorder=2,
+                )[0]
+            )
+
+    uncertainty_artists: list[Any] = []
+    if fit.sigma and settings.uncertainty_mode != "none":
+        sigma = [fit.sigma[index] / scale for index in point_indices]
+        if settings.log_scale:
+            lower = [
+                math.log10(max((value - error) / scale, settings.log_epsilon))
+                for value, error in zip(observed_raw, [fit.sigma[index] for index in point_indices])
+            ]
+            upper = [
+                math.log10(max((value + error) / scale, settings.log_epsilon))
+                for value, error in zip(observed_raw, [fit.sigma[index] for index in point_indices])
+            ]
+        else:
+            lower = [value - error for value, error in zip(observed, sigma)]
+            upper = [value + error for value, error in zip(observed, sigma)]
+        if settings.uncertainty_mode == "band":
+            uncertainty_artists.append(
+                main_ax.fill_between(
+                    x_clean,
+                    lower,
+                    upper,
+                    color=PLOT_MUTED_COLOR,
+                    alpha=settings.uncertainty_alpha,
+                    linewidth=0.0,
+                    label="_nolegend_",
+                    zorder=1,
+                )
+            )
+        else:
+            stride = max(1, int(settings.errorbar_stride))
+            sampled_indices = range(0, len(x_clean), stride)
+            bar_x = [x_clean[index] for index in sampled_indices]
+            bar_y = [observed[index] for index in range(0, len(observed), stride)]
+            bar_lower = [lower[index] for index in range(0, len(lower), stride)]
+            bar_upper = [upper[index] for index in range(0, len(upper), stride)]
+            uncertainty_artists.append(
+                main_ax.errorbar(
+                    bar_x,
+                    bar_y,
+                    yerr=[
+                        [value - bound for value, bound in zip(bar_y, bar_lower)],
+                        [bound - value for value, bound in zip(bar_y, bar_upper)],
+                    ],
+                    fmt="none",
+                    ecolor=PLOT_MUTED_COLOR,
+                    elinewidth=0.5,
+                    capsize=1.5,
+                    label="_nolegend_",
+                    zorder=1,
+                )
+            )
+    if uncertainty_artists:
+        axes["uncertainty"] = uncertainty_artists
+
+    difference = [(fit.observed[index] - fit.calculated[index]) / scale for index in point_indices]
+    residual_ax.axhline(0.0, color=PLOT_MUTED_COLOR, linewidth=0.5, zorder=1)
+    residual_ax.plot(x_clean, difference, color="#286FB7", linewidth=max(settings.line_width, 0.65), label="Difference")
+    residual_ax.set_ylabel("Obs. − calc.")
+    residual_ax.set_xlabel(settings.x_label or default_axis_label(settings.x_axis))
+    main_ax.set_ylabel(settings.y_label)
+    main_ax.tick_params(axis="x", labelbottom=False)
+
+    x_range, exact_x_range = _fit_x_range(x_clean, settings)
+    _apply_x_range(main_ax, x_range, exact=exact_x_range)
+
+    annotation_artists = draw_annotations(main_ax, state)
+    if annotation_artists:
+        axes["annotations"] = annotation_artists
+    _apply_x_range(residual_ax, x_range, exact=exact_x_range)
+    phase_handles = _draw_bragg_band(main_ax, state)
+    _apply_x_range(main_ax, x_range, exact=exact_x_range)
+    _polish_main_axis(main_ax, state, handles, phase_handles)
+    _polish_residual_axis(residual_ax, settings)
+
+    if settings.show_fit_metrics:
+        metric_lines = []
+        if fit.rp is not None and math.isfinite(fit.rp):
+            metric_lines.append(f"$R_p$ = {fit.rp:.3g}%")
+        if fit.rwp is not None and math.isfinite(fit.rwp):
+            metric_lines.append(f"$R_{{wp}}$ = {fit.rwp:.3g}%")
+        if metric_lines:
+            main_ax.text(
+                0.03,
+                0.84 if settings.panel_title else 0.96,
+                "\n".join(metric_lines),
+                transform=main_ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=settings.tick_label_size,
+                color=PLOT_TEXT_COLOR,
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
+            )
+
+    if settings.panel_title:
+        main_ax.text(
+            0.03,
+            0.95,
+            settings.panel_title,
+            transform=main_ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=max(settings.axis_label_size, settings.font_size),
+            fontweight="bold",
+            color=PLOT_TEXT_COLOR,
+        )
+    fig.subplots_adjust(
+        left=settings.margin_left,
+        right=_layout_right_margin(settings, legend=main_ax.get_legend()),
+        top=settings.margin_top,
+        bottom=settings.margin_bottom,
+        hspace=0.05,
+    )
+    return fig, axes
+
+
+def _component_color(index: int) -> str:
+    colors = ("#2B9C8F", "#7A5CC7", "#E2A23A", "#45A7E6", "#B05A7A")
+    return colors[index % len(colors)]
+
+
+def _fit_x_range(x_values: list[float], settings: Any) -> tuple[tuple[float, float], bool]:
+    if settings.x_min is not None and settings.x_max is not None:
+        return (float(settings.x_min), float(settings.x_max)), True
+    minimum = float(settings.x_min) if settings.x_min is not None else min(x_values)
+    maximum = float(settings.x_max) if settings.x_max is not None else max(x_values)
+    return (minimum, maximum), settings.x_min is not None or settings.x_max is not None
+
+
+def _polish_residual_axis(ax: Any, settings: Any) -> None:
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(min(max(settings.line_width, 0.6), 0.8))
+        spine.set_color(PLOT_AXIS_COLOR)
+    ax.grid(False)
+    ax.tick_params(
+        axis="both",
+        colors=PLOT_TEXT_COLOR,
+        width=0.65,
+        length=3.0,
+        direction="out",
+        top=False,
+        right=False,
+        labelsize=settings.tick_label_size,
+    )
+    ax.yaxis.label.set_size(settings.axis_label_size)
+    ax.xaxis.label.set_size(settings.axis_label_size)
 
 
 def export_project(state: ProjectState, path: str | Path) -> None:
     output = Path(path)
-    fig, _axes = render_project(state)
-    # Keep the requested physical canvas.  ``bbox_inches="tight"`` crops the
-    # page and makes the exported dimensions depend on the drawn artists.
-    fig.savefig(output, dpi=state.settings.dpi, facecolor="white", edgecolor="white")
+    import matplotlib as mpl
+
+    # Vector backends add the current time and, for SVG, hash-derived marker
+    # identifiers by default.  Keep those values stable for publication
+    # artifacts while confining the rcParam override to this export call.
+    export_context = {"svg.hashsalt": "xrdviz-publication"}
+    save_kwargs: dict[str, Any] = {}
+    suffix = output.suffix.lower()
+    if suffix == ".pdf":
+        export_date = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        save_kwargs["metadata"] = {"CreationDate": export_date, "ModDate": export_date}
+    elif suffix == ".svg":
+        save_kwargs["metadata"] = {"Date": "2000-01-01T00:00:00+00:00"}
+
+    with mpl.rc_context(export_context):
+        fig, _axes = render_project(state)
+        # Keep the requested physical canvas.  ``bbox_inches="tight"`` crops
+        # the page and makes the exported dimensions depend on drawn artists.
+        fig.savefig(
+            output,
+            dpi=state.settings.dpi,
+            facecolor="white",
+            edgecolor="white",
+            **save_kwargs,
+        )
     if output.suffix.lower() in {".png", ".tif", ".tiff"}:
         _ensure_opaque_raster(output, state.settings.dpi)
 
 
-def _draw_spectra(ax: Any, state: ProjectState, fig: Any) -> tuple[list[Any], Any | None]:
+def _draw_spectra(ax: Any, state: ProjectState, fig: Any) -> tuple[list[Any], Any | None, list[Any]]:
     settings = state.settings
     visible_layers = select_spectrum_layers(state.spectra, show_every_n=settings.show_every_n)
     temperature_unit = single_temperature_unit(visible_layers) if settings.color_by == "temperature" else None
@@ -115,17 +564,24 @@ def _draw_spectra(ax: Any, state: ProjectState, fig: Any) -> tuple[list[Any], An
     value_min = min(finite_values) if finite_values else 0.0
     value_max = max(finite_values) if finite_values else 1.0
     handles = []
+    uncertainty_artists: list[Any] = []
     for index, layer in enumerate(visible_layers):
-        x_values = convert_x(layer.x, layer.axis_kind, settings.x_axis, settings.energy_kev)
+        x_values = convert_x(
+            layer.x,
+            layer.axis_kind,
+            settings.x_axis,
+            layer_energy_kev(layer, settings.energy_kev),
+        )
         y_values = display_y_for_layer(layer, settings, index)
-        pairs = [
-            (x_value, y_value)
-            for x_value, y_value in zip(x_values, y_values)
+        finite_indices = [
+            point_index
+            for point_index, (x_value, y_value) in enumerate(zip(x_values, y_values))
             if math.isfinite(x_value) and math.isfinite(y_value)
         ]
-        if not pairs:
+        if not finite_indices:
             continue
-        x_clean, y_clean = zip(*pairs)
+        x_clean = [x_values[point_index] for point_index in finite_indices]
+        y_clean = [y_values[point_index] for point_index in finite_indices]
         color = layer.color
         if settings.view_mode == "gradient_stack":
             value = gradient_values[index] if index < len(gradient_values) else None
@@ -141,6 +597,52 @@ def _draw_spectra(ax: Any, state: ProjectState, fig: Any) -> tuple[list[Any], An
             label=layer.name,
         )
         handles.append(handle)
+        if layer.y_error and settings.uncertainty_mode != "none":
+            lower, upper = display_uncertainty_for_layer(layer, settings, index)
+            uncertainty_indices = [
+                point_index
+                for point_index in finite_indices
+                if point_index < len(lower)
+                and math.isfinite(lower[point_index])
+                and math.isfinite(upper[point_index])
+            ]
+            if uncertainty_indices and settings.uncertainty_mode == "band":
+                uncertainty_x = [x_values[point_index] for point_index in uncertainty_indices]
+                uncertainty_lower = [lower[point_index] for point_index in uncertainty_indices]
+                uncertainty_upper = [upper[point_index] for point_index in uncertainty_indices]
+                uncertainty_artists.append(
+                    ax.fill_between(
+                        uncertainty_x,
+                        uncertainty_lower,
+                        uncertainty_upper,
+                        color=color,
+                        alpha=settings.uncertainty_alpha,
+                        linewidth=0.0,
+                        label="_nolegend_",
+                    )
+                )
+            elif uncertainty_indices and settings.uncertainty_mode == "bars":
+                stride = max(1, int(settings.errorbar_stride))
+                sampled_indices = uncertainty_indices[::stride]
+                uncertainty_x = [x_values[point_index] for point_index in sampled_indices]
+                uncertainty_y = [y_values[point_index] for point_index in sampled_indices]
+                uncertainty_lower = [lower[point_index] for point_index in sampled_indices]
+                uncertainty_upper = [upper[point_index] for point_index in sampled_indices]
+                lower_error = [value - bound for value, bound in zip(uncertainty_y, uncertainty_lower)]
+                upper_error = [bound - value for value, bound in zip(uncertainty_y, uncertainty_upper)]
+                uncertainty_artists.append(
+                    ax.errorbar(
+                        uncertainty_x,
+                        uncertainty_y,
+                        yerr=[lower_error, upper_error],
+                        fmt="none",
+                        ecolor=color,
+                        elinewidth=max(0.4, layer.linewidth * 0.7),
+                        capsize=1.5,
+                        alpha=max(settings.uncertainty_alpha, 0.45),
+                        label="_nolegend_",
+                    )
+                )
         if settings.direct_labels:
             ax.text(
                 x_clean[-1],
@@ -161,7 +663,7 @@ def _draw_spectra(ax: Any, state: ProjectState, fig: Any) -> tuple[list[Any], An
             value_max,
             _metadata_label(settings.color_by, visible_layers),
         )
-    return handles, colorbar_ax
+    return handles, colorbar_ax, uncertainty_artists
 
 
 def _draw_heatmap(ax: Any, state: ProjectState, fig: Any) -> tuple[Any | None, Any | None]:
@@ -300,7 +802,12 @@ def _polish_main_axis(ax: Any, state: ProjectState, spectrum_handles: list[Any],
         top=False,
         right=False,
     )
-    show_y_ticks = settings.show_y_tick_labels or settings.view_mode == "heatmap"
+    show_y_ticks = settings.show_y_tick_labels or settings.view_mode in {
+        "heatmap",
+        "map",
+        "derived",
+        "small_multiples",
+    }
     ax.tick_params(
         axis="y",
         left=show_y_ticks,
@@ -499,7 +1006,12 @@ def _visible_spectrum_x_range(state: ProjectState) -> tuple[float, float] | None
     for layer in state.spectra:
         if not layer.visible:
             continue
-        converted = convert_x(layer.x, layer.axis_kind, state.settings.x_axis, state.settings.energy_kev)
+        converted = convert_x(
+            layer.x,
+            layer.axis_kind,
+            state.settings.x_axis,
+            layer_energy_kev(layer, state.settings.energy_kev),
+        )
         x_values.extend(value for value in converted if math.isfinite(value))
     if not x_values:
         return None

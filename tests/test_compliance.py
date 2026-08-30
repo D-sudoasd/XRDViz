@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from xrdviz.compliance import nature_compliance_issues
+from xrdviz.maps import MapData
 from xrdviz.models import PhaseLayer, PhasePeak, PlotSettings, ProjectState, SpectrumLayer
 
 
@@ -89,6 +90,24 @@ class NatureComplianceTests(unittest.TestCase):
         )
 
         self.assertTrue(any("visible spectrum line" in issue for issue in nature_compliance_issues(state)))
+
+    def test_empty_map_with_zero_counts_is_not_compliant(self):
+        state = ProjectState(
+            map_data=MapData(
+                kind="cake",
+                x=[10.0, 20.0],
+                y=[-5.0, 5.0],
+                intensity=[[0.0, 0.0], [0.0, 0.0]],
+                counts=[[0.0, 0.0], [0.0, 0.0]],
+            ),
+            settings=PlotSettings(view_mode="map", show_colorbar=True),
+        )
+
+        issues = nature_compliance_issues(state)
+        self.assertTrue(
+            any("map data" in issue.lower() and "populated" in issue.lower() for issue in issues),
+            issues,
+        )
 
     def test_display_range_outside_data_fails_for_line_and_heatmap(self):
         state = ProjectState(

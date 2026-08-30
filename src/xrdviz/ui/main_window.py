@@ -7,6 +7,7 @@ from typing import Callable
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -35,28 +38,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from xrdviz.calibration import auto_calibrate_phases
 from xrdviz.batch import apply_batch_metadata
 from xrdviz.cif import load_cif_phase
 from xrdviz.compliance import nature_compliance_issues
 from xrdviz.io import (
     apply_sample_metadata,
-    load_reference_peaks_csv_many,
-    load_rigaku_peaks_csv,
     load_sample_labels_csv,
     load_spectrum,
 )
 from xrdviz.models import OKABE_ITO, PlotSettings, ProjectState, default_axis_label
-from xrdviz.plot.renderer import export_project, render_project
-from xrdviz.plot.style import apply_publication_preset
-from xrdviz.publication import export_publication_bundle, make_peak_table_rows
-from xrdviz.project import load_project, save_project
+from xrdviz.plot.renderer import render_project
+from xrdviz.ui.advanced_workflows import AdvancedWorkflowMixin
+from xrdviz.ui.project_io import ProjectIoMixin
+from xrdviz.ui.reference_workflows import ReferencePeaksMixin
 
 SPECTRUM_SUFFIXES = {".txt", ".csv", ".xy", ".dat"}
 CIF_SUFFIXES = {".cif"}
+DETECTOR_SUFFIXES = {".npy", ".npz", ".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp"}
 
 
-class MainWindow(QMainWindow):
+class MainWindow(ProjectIoMixin, ReferencePeaksMixin, AdvancedWorkflowMixin, QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("XRDViz")
@@ -64,7 +65,15 @@ class MainWindow(QMainWindow):
         self.state = ProjectState()
         self.figure = Figure(figsize=(self.state.settings.figure_width_in, self.state.settings.figure_height_in))
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.setAccessibleName("XRDViz plot preview")
+        self.canvas.setAccessibleDescription(
+            "Interactive XRD figure preview. A text alternative is available below the canvas."
+        )
+        self.last_render_axes: dict[str, object] = {}
         self._refreshing_layers = False
+        self._preview_resize_timer = QTimer(self)
+        self._preview_resize_timer.setSingleShot(True)
+        self._preview_resize_timer.timeout.connect(self.render)
 
         self._build_actions()
         self._build_layout()
@@ -72,6 +81,26 @@ class MainWindow(QMainWindow):
         self._sync_controls_from_settings()
         self.refresh_layers()
         self.render()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        self._schedule_preview_render()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._schedule_preview_render()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        """Cooperatively stop numerical workers before Qt destroys them."""
+
+        if not self.shutdown_peak_decomposition(timeout_ms=2000):
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def _schedule_preview_render(self) -> None:
+        if self.isVisible() and self._preview_resize_timer is not None:
+            self._preview_resize_timer.start(0)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt API
         if any(_is_supported_path(Path(url.toLocalFile())) for url in event.mimeData().urls()):
@@ -93,6 +122,7 @@ class MainWindow(QMainWindow):
         self.open_reference_action = _action("Open reference peaks CSV...", self, self.import_reference_peaks_dialog)
         self.open_rigaku_peaks_action = _action("Open Rigaku peaks CSV...", self, self.import_rigaku_peaks_dialog)
         self.open_metadata_action = _action("Open sample labels CSV...", self, self.import_sample_metadata_dialog)
+        self.open_fit_action = _action("Open observed/calculated fit CSV...", self, self.import_pattern_fit_dialog)
         self.open_project_action = _action("Open project...", self, self.open_project)
         self.save_project_action = _action("Save project...", self, self.save_project)
         self.export_action = _action("Export figure...", self, self.export_figure)
@@ -106,6 +136,7 @@ class MainWindow(QMainWindow):
             self.open_reference_action,
             self.open_rigaku_peaks_action,
             self.open_metadata_action,
+            self.open_fit_action,
             self.open_project_action,
             self.save_project_action,
             self.export_action,
@@ -121,24 +152,82 @@ class MainWindow(QMainWindow):
         for action in (self.open_spectrum_action, self.open_cif_action, self.open_reference_action, self.export_action):
             toolbar.addAction(action)
 
+        self._build_analysis_actions()
+
     def _build_layout(self) -> None:
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self._layers_panel())
+        self.splitter = splitter
+        splitter.addWidget(self._scrollable_sidebar(self._layers_panel()))
         self.plot_panel = QWidget()
+        self.plot_panel.setMinimumWidth(500)
+        self.plot_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         plot_layout = QVBoxLayout(self.plot_panel)
         plot_layout.setContentsMargins(0, 0, 0, 0)
         self.navigation_toolbar = NavigationToolbar2QT(self.canvas, self)
+        self._hide_toolbar_save_action()
         plot_layout.addWidget(self.navigation_toolbar)
-        plot_layout.addWidget(self.canvas, stretch=1)
+        self.canvas_container = QWidget()
+        self.canvas_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        canvas_layout = QVBoxLayout(self.canvas_container)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.setAlignment(Qt.AlignCenter)
+        canvas_layout.addWidget(self.canvas, 0, Qt.AlignCenter)
+        plot_layout.addWidget(self.canvas_container, stretch=1)
+        self.preview_summary_label = QLabel()
+        self.preview_summary_label.setAccessibleName("Plot text alternative")
+        self.preview_summary_label.setWordWrap(True)
+        self.preview_summary_label.setTextFormat(Qt.PlainText)
+        self.preview_summary_label.setStyleSheet("color: #5A5A5A;")
+        plot_layout.addWidget(self.preview_summary_label)
         splitter.addWidget(self.plot_panel)
-        splitter.addWidget(self._properties_panel())
+        splitter.addWidget(self._scrollable_sidebar(self._properties_panel(), horizontal=False))
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        splitter.setSizes([250, 780, 300])
+        splitter.setCollapsible(0, True)
+        splitter.setCollapsible(1, False)
+        splitter.setCollapsible(2, True)
+        splitter.setSizes([260, 680, 340])
         self.setCentralWidget(splitter)
         self.nature_status_label = QLabel("Nature: checking...")
         self.statusBar().addPermanentWidget(self.nature_status_label)
+
+    def _hide_toolbar_save_action(self) -> None:
+        """Keep the toolbar from saving a screen-preview-sized figure.
+
+        The explicit File > Export figure action is the publication export
+        contract and uses the configured physical size and DPI.
+        """
+
+        for action in self.navigation_toolbar.actions():
+            if action.text().strip().casefold() == "save":
+                action.setVisible(False)
+                action.setEnabled(False)
+                action.setToolTip("Use File > Export figure for publication output")
+                self.navigation_toolbar_save_action = action
+                return
+        self.navigation_toolbar_save_action = None
+
+    @staticmethod
+    def _scrollable_sidebar(widget: QWidget, *, horizontal: bool = True) -> QScrollArea:
+        """Keep narrow windows usable while retaining all sidebar controls.
+
+        The layer buttons and reference-peak table have content-driven size
+        hints.  Putting each sidebar behind a scroll area prevents those hints
+        from becoming the main window's minimum width; the plot keeps the
+        space it needs and the sidebars can still be inspected at narrow
+        widths.
+        """
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded if horizontal else Qt.ScrollBarAlwaysOff
+        )
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        scroll.setWidget(widget)
+        return scroll
 
     def _layers_panel(self) -> QWidget:
         panel = QWidget()
@@ -153,7 +242,9 @@ class MainWindow(QMainWindow):
         self.layer_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         layout.addWidget(self.layer_table, stretch=1)
 
-        buttons = QHBoxLayout()
+        buttons = QGridLayout()
+        buttons.setHorizontalSpacing(4)
+        buttons.setVerticalSpacing(4)
         add_spectrum = QPushButton("Spectrum")
         add_spectrum.clicked.connect(self.open_spectra)
         add_cif = QPushButton("CIF")
@@ -166,12 +257,10 @@ class MainWindow(QMainWindow):
         up.clicked.connect(lambda: self.move_selected_layer(-1))
         down = QPushButton("Down")
         down.clicked.connect(lambda: self.move_selected_layer(1))
-        buttons.addWidget(add_spectrum)
-        buttons.addWidget(add_cif)
-        buttons.addWidget(remove)
-        buttons.addWidget(toggle)
-        buttons.addWidget(up)
-        buttons.addWidget(down)
+        for index, button in enumerate(
+            (add_spectrum, add_cif, remove, toggle, up, down)
+        ):
+            buttons.addWidget(button, index // 3, index % 3)
         layout.addLayout(buttons)
 
         color_button = QPushButton("Set color")
@@ -183,12 +272,14 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self._plot_properties_tab(), "Plot")
         tabs.addTab(self._batch_properties_tab(), "Batch")
+        tabs.addTab(self._analysis_tab(), "Analysis")
         tabs.addTab(self._reference_peaks_tab(), "Reference Peaks")
         return tabs
 
     def _plot_properties_tab(self) -> QWidget:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         container = QWidget()
         form = QFormLayout(container)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -226,6 +317,35 @@ class MainWindow(QMainWindow):
 
         self.stack_spacing_spin = _double_spin(0.0, 10.0, 3)
         form.addRow("Stack spacing", self.stack_spacing_spin)
+
+        self.small_multiples_columns_spin = QSpinBox()
+        self.small_multiples_columns_spin.setRange(1, 6)
+        self.panel_labels_check = QCheckBox("Show automatic (a), (b), ... labels")
+        form.addRow("Small-multiple columns", self.small_multiples_columns_spin)
+        form.addRow(self.panel_labels_check)
+
+        self.inset_check = QCheckBox("Show zoom inset")
+        self.inset_x_min_edit = QLineEdit()
+        self.inset_x_max_edit = QLineEdit()
+        self.inset_x_min_edit.setPlaceholderText("required when inset is on")
+        self.inset_x_max_edit.setPlaceholderText("required when inset is on")
+        form.addRow(self.inset_check)
+        form.addRow("Inset x min", self.inset_x_min_edit)
+        form.addRow("Inset x max", self.inset_x_max_edit)
+
+        self.uncertainty_mode_combo = _field_combo(
+            [("None", "none"), ("Shaded band", "band"), ("Error bars", "bars")]
+        )
+        self.errorbar_stride_spin = QSpinBox()
+        self.errorbar_stride_spin.setRange(1, 10000)
+        self.fit_components_check = QCheckBox("Show fitted components")
+        self.fit_background_check = QCheckBox("Show fitted background")
+        self.fit_metrics_check = QCheckBox("Show Rp / Rwp")
+        form.addRow("Uncertainty", self.uncertainty_mode_combo)
+        form.addRow("Error bar every N", self.errorbar_stride_spin)
+        form.addRow(self.fit_components_check)
+        form.addRow(self.fit_background_check)
+        form.addRow(self.fit_metrics_check)
 
         self.width_spin = _double_spin(1.0, 20.0, 5)
         self.width_spin.setSingleStep(0.01)
@@ -310,6 +430,7 @@ class MainWindow(QMainWindow):
     def _batch_properties_tab(self) -> QWidget:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         container = QWidget()
         form = QFormLayout(container)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -320,6 +441,10 @@ class MainWindow(QMainWindow):
                 ("Stack", "stack"),
                 ("Gradient stack", "gradient_stack"),
                 ("Heatmap", "heatmap"),
+                ("Small multiples", "small_multiples"),
+                ("Observed / calculated fit", "refinement"),
+                ("2D detector / cake / RSM / pole figure", "map"),
+                ("Scherrer / W-H / rocking curve", "derived"),
             ]
         )
         self.sort_by_combo = _field_combo(
@@ -370,34 +495,6 @@ class MainWindow(QMainWindow):
         scroll.setWidget(container)
         return scroll
 
-    def _reference_peaks_tab(self) -> QWidget:
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        controls = QHBoxLayout()
-        ref_button = QPushButton("Reference CSV")
-        ref_button.clicked.connect(self.import_reference_peaks_dialog)
-        rigaku_button = QPushButton("Rigaku Peaks")
-        rigaku_button.clicked.connect(self.import_rigaku_peaks_dialog)
-        cif_button = QPushButton("CIF")
-        cif_button.clicked.connect(self.open_cif)
-        self.auto_fit_button = QPushButton("Auto fit phase peaks")
-        self.auto_fit_button.clicked.connect(self.auto_fit_phase_peaks)
-        export_button = QPushButton("Export peak table")
-        export_button.clicked.connect(self.export_peak_table_dialog)
-        controls.addWidget(ref_button)
-        controls.addWidget(rigaku_button)
-        controls.addWidget(cif_button)
-        controls.addWidget(self.auto_fit_button)
-        controls.addWidget(export_button)
-        layout.addLayout(controls)
-
-        self.peak_table = QTableWidget(0, 8)
-        self.peak_table.setHorizontalHeaderLabels(["Phase", "2theta", "d", "Q", "Intensity", "hkl", "Label", "Source"])
-        self.peak_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.peak_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        layout.addWidget(self.peak_table, stretch=1)
-        return panel
-
     def _connect_controls(self) -> None:
         controls = [
             self.x_axis_combo,
@@ -411,6 +508,16 @@ class MainWindow(QMainWindow):
             self.log_check,
             self.stack_check,
             self.stack_spacing_spin,
+            self.small_multiples_columns_spin,
+            self.panel_labels_check,
+            self.inset_check,
+            self.inset_x_min_edit,
+            self.inset_x_max_edit,
+            self.uncertainty_mode_combo,
+            self.errorbar_stride_spin,
+            self.fit_components_check,
+            self.fit_background_check,
+            self.fit_metrics_check,
             self.width_spin,
             self.height_spin,
             self.dpi_spin,
@@ -442,6 +549,8 @@ class MainWindow(QMainWindow):
                 control.currentIndexChanged.connect(lambda *_args: self._template_changed())
             elif control is self.view_mode_combo:
                 control.currentIndexChanged.connect(lambda *_args: self._view_mode_changed())
+            elif control is self.inset_check:
+                control.stateChanged.connect(lambda *_args: self._inset_changed())
             elif control in (self.sort_by_combo, self.color_by_combo, self.colormap_combo):
                 control.currentIndexChanged.connect(lambda *_args: self._batch_controls_changed())
             elif isinstance(control, QComboBox):
@@ -455,13 +564,58 @@ class MainWindow(QMainWindow):
         self._update_batch_control_state()
         self.render()
 
+    def _inset_changed(self) -> None:
+        self._update_batch_control_state()
+        self.render()
+
     def _update_batch_control_state(self) -> None:
         mode = self.view_mode_combo.currentData()
+        spectrum_modes = {"overlay", "stack", "gradient_stack", "heatmap", "small_multiples", "refinement"}
+        axis_modes = spectrum_modes
+        legend_modes = {"overlay", "stack", "gradient_stack", "heatmap", "refinement"}
+        uncertainty_modes = {"overlay", "stack", "gradient_stack", "heatmap", "refinement"}
+
+        axis_enabled = mode in axis_modes
+        for control in (
+            self.x_axis_combo,
+            self.energy_spin,
+            self.x_label_edit,
+            self.y_label_edit,
+        ):
+            control.setEnabled(axis_enabled)
+        self.x_min_edit.setEnabled(mode in {"overlay", "stack", "gradient_stack", "heatmap", "small_multiples", "refinement", "derived"})
+        self.x_max_edit.setEnabled(mode in {"overlay", "stack", "gradient_stack", "heatmap", "small_multiples", "refinement", "derived"})
+        self.normalize_check.setEnabled(mode in spectrum_modes or mode == "map")
+        self.log_check.setEnabled(mode in spectrum_modes or mode == "map")
+        stack_controls = mode in {"stack", "gradient_stack"}
+        self.stack_check.setEnabled(stack_controls)
+        self.stack_spacing_spin.setEnabled(stack_controls and self.stack_check.isChecked())
         self.heatmap_points_spin.setEnabled(mode == "heatmap")
         self.color_by_combo.setEnabled(mode == "gradient_stack")
-        enabled = mode in {"gradient_stack", "heatmap"}
+        enabled = mode in {"gradient_stack", "heatmap", "map"}
         self.colormap_combo.setEnabled(enabled)
         self.show_colorbar_check.setEnabled(enabled)
+        self.small_multiples_columns_spin.setEnabled(mode == "small_multiples")
+        self.panel_labels_check.setEnabled(mode == "small_multiples")
+        self.show_every_n_spin.setEnabled(mode in {"overlay", "stack", "gradient_stack", "heatmap", "small_multiples"})
+        inset_available = mode in {"overlay", "stack", "gradient_stack"}
+        self.inset_check.setEnabled(inset_available)
+        self.inset_x_min_edit.setEnabled(inset_available and self.inset_check.isChecked())
+        self.inset_x_max_edit.setEnabled(inset_available and self.inset_check.isChecked())
+        refinement = mode == "refinement"
+        self.uncertainty_mode_combo.setEnabled(mode in uncertainty_modes)
+        self.errorbar_stride_spin.setEnabled(
+            mode in uncertainty_modes and self.uncertainty_mode_combo.currentData() == "bars"
+        )
+        self.fit_components_check.setEnabled(refinement)
+        self.fit_background_check.setEnabled(refinement)
+        self.fit_metrics_check.setEnabled(refinement)
+        self.legend_location_combo.setEnabled(mode in legend_modes)
+        self.legend_check.setEnabled(mode in legend_modes)
+        self.direct_labels_check.setEnabled(mode in legend_modes)
+        self.phase_legend_check.setEnabled(mode in legend_modes)
+        self.y_tick_labels_check.setEnabled(mode in spectrum_modes)
+        self.bragg_height_spin.setEnabled(mode in legend_modes)
 
     def _axis_changed(self) -> None:
         axis_kind = self.x_axis_combo.currentData()
@@ -521,46 +675,21 @@ class MainWindow(QMainWindow):
         self.refresh_layers()
         self.render()
 
-    def import_reference_peaks_dialog(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open reference peaks CSV", "", "CSV files (*.csv);;All files (*.*)")
-        if path:
-            self.import_reference_peaks(Path(path))
-
-    def import_reference_peaks(self, path: str | Path) -> None:
-        try:
-            text = Path(path).read_text(encoding="utf-8-sig")
-            self.state.phases.extend(load_reference_peaks_csv_many(text, source_path=str(path)))
-        except Exception as exc:  # noqa: BLE001 - surfaced to user
-            QMessageBox.warning(self, "Reference peaks import failed", str(exc))
-            return
-        self.refresh_layers()
-        self.refresh_peak_table()
-        self.render()
-
-    def import_rigaku_peaks_dialog(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open Rigaku peaks CSV", "", "CSV files (*.csv);;All files (*.*)")
-        if path:
-            self.import_rigaku_peaks(Path(path))
-
-    def import_rigaku_peaks(self, path: str | Path) -> None:
-        try:
-            self.state.phases.append(load_rigaku_peaks_csv(Path(path).read_text(encoding="utf-8-sig"), source_path=str(path)))
-        except Exception as exc:  # noqa: BLE001 - surfaced to user
-            QMessageBox.warning(self, "Rigaku peaks import failed", str(exc))
-            return
-        self.refresh_layers()
-        self.refresh_peak_table()
-        self.render()
-
     def add_files(self, paths: list[Path]) -> None:
         spectrum_paths = [path for path in paths if path.suffix.lower() in SPECTRUM_SUFFIXES]
         cif_paths = [path for path in paths if path.suffix.lower() in CIF_SUFFIXES]
+        detector_paths = [path for path in paths if path.suffix.lower() in DETECTOR_SUFFIXES]
         self._add_spectra(spectrum_paths)
         self._add_cifs(cif_paths)
         if spectrum_paths or cif_paths:
             self.refresh_layers()
             self.refresh_peak_table()
             self.render()
+        for path in detector_paths:
+            try:
+                self.import_detector_image(path, mode="raw")
+            except Exception as exc:  # noqa: BLE001 - surfaced to user
+                QMessageBox.warning(self, "Detector import failed", f"{path.name}: {exc}")
 
     def remove_selected_layer(self) -> None:
         selected = self.layer_table.selectionModel().selectedRows()
@@ -627,110 +756,6 @@ class MainWindow(QMainWindow):
         self.refresh_peak_table()
         self.render()
 
-    def apply_preset(self, preset: str) -> None:
-        try:
-            settings = self._settings_from_controls()
-            self.state.settings = apply_publication_preset(settings, preset)
-        except Exception as exc:  # noqa: BLE001 - surfaced to user
-            self._show_status(f"Preset not applied: {exc}", timeout=8000)
-            return
-        self._sync_controls_from_settings()
-        self.render()
-
-    def open_project(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open XRDViz project", "", "XRDViz JSON (*.json);;All files (*.*)")
-        if not path:
-            return
-        try:
-            self.state = load_project(path)
-        except Exception as exc:  # noqa: BLE001 - surfaced to user
-            QMessageBox.critical(self, "Open project failed", str(exc))
-            return
-        self._sync_controls_from_settings()
-        self.refresh_layers()
-        self.render()
-
-    def save_project(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save XRDViz project",
-            "project.xrdviz.json",
-            "XRDViz JSON (*.json);;All files (*.*)",
-        )
-        if not path:
-            return
-        try:
-            self.state.settings = self._settings_from_controls()
-            save_project(self.state, path)
-        except Exception as exc:  # noqa: BLE001 - surfaced to user
-            QMessageBox.critical(self, "Save project failed", str(exc))
-        else:
-            self._show_status(f"Project saved: {Path(path).name}")
-
-    def export_figure(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export figure",
-            "xrd_figure.pdf",
-            "PDF (*.pdf);;SVG (*.svg);;PNG (*.png);;TIFF (*.tif *.tiff)",
-        )
-        if not path:
-            return
-        try:
-            self.state.settings = self._settings_from_controls()
-            export_project(self.state, path)
-        except Exception as exc:  # noqa: BLE001 - surfaced to user
-            self._show_status(f"Figure export failed: {exc}", timeout=8000)
-            QMessageBox.critical(self, "Export failed", str(exc))
-        else:
-            self._show_status(f"Figure exported: {Path(path).name}")
-
-    def export_publication_bundle_dialog(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Export publication bundle")
-        if not folder:
-            return
-        try:
-            self.export_publication_bundle_to(Path(folder))
-        except Exception as exc:  # noqa: BLE001 - surfaced to user
-            self._show_status(f"Publication bundle export failed: {exc}", timeout=8000)
-            QMessageBox.critical(self, "Publication bundle export failed", str(exc))
-
-    def export_publication_bundle_to(self, output_dir: str | Path):
-        """Export to ``output_dir``; dialog callers surface any raised error."""
-
-        self.state.settings = self._settings_from_controls()
-        outputs = export_publication_bundle(self.state, output_dir)
-        self._show_status(f"Publication bundle exported: {Path(output_dir).name or Path(output_dir)}")
-        return outputs
-
-    def auto_fit_phase_peaks(self) -> None:
-        try:
-            self.state.settings = self._settings_from_controls()
-            auto_calibrate_phases(self.state)
-        except Exception as exc:  # noqa: BLE001 - surfaced to user
-            QMessageBox.warning(self, "Auto fit failed", str(exc))
-            return
-        self.refresh_layers()
-        self.refresh_peak_table()
-        self.render()
-
-    def export_peak_table_dialog(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export peak table", "reference_peak_table.csv", "CSV files (*.csv)")
-        if not path:
-            return
-        from xrdviz.publication import export_peak_table
-
-        try:
-            self.state.settings = self._settings_from_controls()
-            output = export_peak_table(self.state, Path(path).parent)
-            if output != Path(path):
-                Path(path).write_text(output.read_text(encoding="utf-8"), encoding="utf-8")
-        except Exception as exc:  # noqa: BLE001 - surfaced to user
-            self._show_status(f"Peak table export failed: {exc}", timeout=8000)
-            QMessageBox.critical(self, "Peak table export failed", str(exc))
-        else:
-            self._show_status(f"Peak table exported: {Path(path).name}")
-
     def refresh_layers(self) -> None:
         self._refreshing_layers = True
         self.layer_table.setRowCount(0)
@@ -743,29 +768,6 @@ class MainWindow(QMainWindow):
             self.layer_table.insertRow(row)
             self._set_layer_row(row, phase.source_type, index, phase.visible, phase.name, phase.source_axis, phase.color, "", phase.lattice_a)
         self._refreshing_layers = False
-
-    def refresh_peak_table(self) -> None:
-        try:
-            self.state.settings = self._settings_from_controls()
-        except Exception:
-            return
-        rows = make_peak_table_rows(self.state)
-        self.peak_table.setRowCount(0)
-        for data in rows:
-            row = self.peak_table.rowCount()
-            self.peak_table.insertRow(row)
-            values = [
-                data["phase"],
-                f"{float(data['two_theta']):.4g}",
-                f"{float(data['d']):.4g}",
-                f"{float(data['q']):.4g}",
-                f"{float(data['intensity']):.4g}",
-                data["hkl"],
-                data["label"],
-                data["source"],
-            ]
-            for column, value in enumerate(values):
-                self.peak_table.setItem(row, column, QTableWidgetItem(str(value)))
 
     def _set_layer_row(self, row: int, kind: str, index: int, visible: bool, label: str, axis_kind: str, color: str, offset: object, linewidth: object) -> None:
         show_item = QTableWidgetItem("yes" if visible else "no")
@@ -818,16 +820,51 @@ class MainWindow(QMainWindow):
             phase.lattice_a = phase.reference_lattice_a if not text else float(text)
 
     def render(self) -> None:
+        previous_settings = self.state.settings
         try:
-            self.state.settings = self._settings_from_controls()
-            render_project(self.state, self.figure)
+            candidate_settings = self._settings_from_controls()
+            self.state.settings = candidate_settings
+            preview_size = self._preview_canvas_size()
+            _figure, rendered_axes = render_project(
+                self.state,
+                self.figure,
+                preview_size=preview_size,
+            )
         except Exception as exc:  # noqa: BLE001 - surfaced to user
+            self.state.settings = previous_settings
             self._show_status(f"Plot not updated: {exc}", timeout=8000)
             self._update_nature_status()
             return
+        self.last_render_axes = rendered_axes
+        self.canvas.setFixedSize(*preview_size)
+        text_alternative = str(rendered_axes.get("text_alternative", "")).strip()
+        if text_alternative:
+            self.canvas.setAccessibleDescription(text_alternative)
+            self.preview_summary_label.setText(text_alternative)
         self.canvas.draw_idle()
         self.refresh_peak_table()
+        self._update_analysis_summary()
         self._update_nature_status()
+
+    def _preview_canvas_size(self) -> tuple[int, int]:
+        """Return an aspect-preserving logical canvas size for a screen preview."""
+
+        width = self.canvas_container.width()
+        height = self.canvas_container.height()
+        if width < 2 or height < 2:
+            width = max(self.plot_panel.width(), 1)
+            height = max(
+                self.plot_panel.height()
+                - self.navigation_toolbar.height()
+                - self.preview_summary_label.sizeHint().height(),
+                1,
+            )
+        aspect = self.state.settings.figure_width_in / self.state.settings.figure_height_in
+        if width / height > aspect:
+            width = max(1, int(round(height * aspect)))
+        else:
+            height = max(1, int(round(width / aspect)))
+        return max(int(width), 1), max(int(height), 1)
 
     def _show_status(self, message: str, *, timeout: int = 6000) -> None:
         self.statusBar().showMessage(message, timeout)
@@ -883,6 +920,11 @@ class MainWindow(QMainWindow):
             log_scale=self.log_check.isChecked(),
             stack_enabled=self.stack_check.isChecked(),
             stack_spacing=self.stack_spacing_spin.value(),
+            small_multiples_columns=self.small_multiples_columns_spin.value(),
+            show_panel_labels=self.panel_labels_check.isChecked(),
+            inset_enabled=self.inset_check.isChecked(),
+            inset_x_min=_optional_float(self.inset_x_min_edit.text(), "Inset x min"),
+            inset_x_max=_optional_float(self.inset_x_max_edit.text(), "Inset x max"),
             figure_width_in=self.width_spin.value(),
             figure_height_in=self.height_spin.value(),
             dpi=self.dpi_spin.value(),
@@ -895,6 +937,11 @@ class MainWindow(QMainWindow):
             direct_labels=self.direct_labels_check.isChecked(),
             show_phase_legend=self.phase_legend_check.isChecked(),
             show_y_tick_labels=self.y_tick_labels_check.isChecked(),
+            uncertainty_mode=self.uncertainty_mode_combo.currentData(),
+            errorbar_stride=self.errorbar_stride_spin.value(),
+            show_fit_components=self.fit_components_check.isChecked(),
+            show_fit_background=self.fit_background_check.isChecked(),
+            show_fit_metrics=self.fit_metrics_check.isChecked(),
             view_mode=self.view_mode_combo.currentData(),
             sort_by=self.sort_by_combo.currentData(),
             color_by=self.color_by_combo.currentData(),
@@ -920,6 +967,20 @@ class MainWindow(QMainWindow):
             (self.log_check, lambda: self.log_check.setChecked(settings.log_scale)),
             (self.stack_check, lambda: self.stack_check.setChecked(settings.stack_enabled)),
             (self.stack_spacing_spin, lambda: self.stack_spacing_spin.setValue(settings.stack_spacing)),
+            (
+                self.small_multiples_columns_spin,
+                lambda: self.small_multiples_columns_spin.setValue(settings.small_multiples_columns),
+            ),
+            (self.panel_labels_check, lambda: self.panel_labels_check.setChecked(settings.show_panel_labels)),
+            (self.inset_check, lambda: self.inset_check.setChecked(settings.inset_enabled)),
+            (
+                self.inset_x_min_edit,
+                lambda: self.inset_x_min_edit.setText("" if settings.inset_x_min is None else f"{settings.inset_x_min:g}"),
+            ),
+            (
+                self.inset_x_max_edit,
+                lambda: self.inset_x_max_edit.setText("" if settings.inset_x_max is None else f"{settings.inset_x_max:g}"),
+            ),
             (self.width_spin, lambda: self.width_spin.setValue(settings.figure_width_in)),
             (self.height_spin, lambda: self.height_spin.setValue(settings.figure_height_in)),
             (self.dpi_spin, lambda: self.dpi_spin.setValue(settings.dpi)),
@@ -934,6 +995,11 @@ class MainWindow(QMainWindow):
             (self.direct_labels_check, lambda: self.direct_labels_check.setChecked(settings.direct_labels)),
             (self.phase_legend_check, lambda: self.phase_legend_check.setChecked(settings.show_phase_legend)),
             (self.y_tick_labels_check, lambda: self.y_tick_labels_check.setChecked(settings.show_y_tick_labels)),
+            (self.uncertainty_mode_combo, lambda: _set_combo_data(self.uncertainty_mode_combo, settings.uncertainty_mode)),
+            (self.errorbar_stride_spin, lambda: self.errorbar_stride_spin.setValue(settings.errorbar_stride)),
+            (self.fit_components_check, lambda: self.fit_components_check.setChecked(settings.show_fit_components)),
+            (self.fit_background_check, lambda: self.fit_background_check.setChecked(settings.show_fit_background)),
+            (self.fit_metrics_check, lambda: self.fit_metrics_check.setChecked(settings.show_fit_metrics)),
             (self.view_mode_combo, lambda: _set_combo_data(self.view_mode_combo, settings.view_mode)),
             (self.sort_by_combo, lambda: _set_combo_data(self.sort_by_combo, settings.sort_by)),
             (self.color_by_combo, lambda: _set_combo_data(self.color_by_combo, settings.color_by)),
@@ -1009,4 +1075,4 @@ def _action(text: str, parent: QWidget, slot: Callable[[], None]) -> QAction:
 
 
 def _is_supported_path(path: Path) -> bool:
-    return path.is_file() and path.suffix.lower() in SPECTRUM_SUFFIXES | CIF_SUFFIXES
+    return path.is_file() and path.suffix.lower() in SPECTRUM_SUFFIXES | CIF_SUFFIXES | DETECTOR_SUFFIXES

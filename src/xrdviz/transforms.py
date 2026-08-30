@@ -37,6 +37,37 @@ def display_y_for_layer(layer: SpectrumLayer, settings: PlotSettings, layer_inde
     )
 
 
+def display_uncertainty_for_layer(
+    layer: SpectrumLayer,
+    settings: PlotSettings,
+    layer_index: int,
+) -> tuple[list[float], list[float]]:
+    """Return lower/upper display bounds using the curve's exact transform.
+
+    Normalization must use the central intensity values, rather than scaling
+    each bound independently, otherwise an uncertainty envelope would be
+    visually narrowed to the same maximum as the measured curve.
+    """
+
+    if not layer.y_error:
+        return [], []
+    scale = _positive_max(layer.y) if settings.normalize else 1.0
+    stack_mode = settings.stack_enabled or settings.view_mode in {"stack", "gradient_stack"}
+    stack_offset = settings.stack_spacing * layer_index if stack_mode else 0.0
+    vertical_offset = layer.offset + stack_offset
+    lower: list[float] = []
+    upper: list[float] = []
+    for value, error in zip(layer.y, layer.y_error):
+        low = (value - error) / scale
+        high = (value + error) / scale
+        if settings.log_scale:
+            low = math.log10(max(low, settings.log_epsilon))
+            high = math.log10(max(high, settings.log_epsilon))
+        lower.append(low + vertical_offset)
+        upper.append(high + vertical_offset)
+    return lower, upper
+
+
 def _positive_max(values: list[float]) -> float:
     positives = [value for value in values if math.isfinite(value) and value > 0.0]
     if not positives:

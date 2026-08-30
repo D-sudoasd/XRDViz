@@ -60,6 +60,75 @@ class SpectrumParserTests(unittest.TestCase):
 
         self.assertEqual(layer.axis_kind, "d")
 
+    def test_load_spectrum_csv_preserves_declared_uncertainty_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "measured.csv"
+            path.write_text(
+                "two_theta,intensity,sigma\n20,100,2\n21,120,3\n22,110,2.5\n",
+                encoding="utf-8",
+            )
+
+            layer = load_spectrum(path, axis_kind="auto")
+
+        self.assertEqual(layer.axis_kind, "two_theta")
+        self.assertEqual(layer.y_error, [2.0, 3.0, 2.5])
+
+    def test_load_spectrum_reads_single_sample_cleaned_export_without_uncertainty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cleaned_xrd_data.csv"
+            path.write_text(
+                "sample,source_file,axis_kind,x,intensity,uncertainty,frame_index,time_s,temperature,temperature_unit,group,color_value\n"
+                "annealed,raw_q.xy,q,1.0,10,,3,12.5,450,K,A,0.2\n"
+                "annealed,raw_q.xy,q,2.0,20,,3,12.5,450,K,A,0.2\n",
+                encoding="utf-8",
+            )
+
+            layer = load_spectrum(path, axis_kind="auto")
+
+        self.assertEqual(layer.name, "annealed")
+        self.assertEqual(layer.source_path, "raw_q.xy")
+        self.assertEqual(layer.axis_kind, "q")
+        self.assertEqual(layer.x, [1.0, 2.0])
+        self.assertEqual(layer.y, [10.0, 20.0])
+        self.assertEqual(layer.y_error, [])
+        self.assertEqual(layer.frame_index, 3)
+        self.assertEqual(layer.time_s, 12.5)
+        self.assertEqual(layer.temperature, 450.0)
+        self.assertEqual(layer.temperature_unit, "K")
+        self.assertEqual(layer.group, "A")
+        self.assertEqual(layer.color_value, 0.2)
+
+    def test_load_spectrum_default_preserves_cleaned_q_axis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cleaned_q.csv"
+            path.write_text(
+                "sample,source_file,axis_kind,x,intensity,uncertainty\n"
+                "annealed,raw_q.xy,q,1.0,10,0.5\n"
+                "annealed,raw_q.xy,q,2.0,20,1.0\n",
+                encoding="utf-8",
+            )
+
+            layer = load_spectrum(path)
+            override = load_spectrum(path, axis_kind="d")
+
+        self.assertEqual(layer.axis_kind, "q")
+        self.assertEqual(layer.x, [1.0, 2.0])
+        self.assertEqual(layer.y_error, [0.5, 1.0])
+        self.assertEqual(override.axis_kind, "d")
+
+    def test_load_spectrum_rejects_multi_sample_cleaned_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cleaned_xrd_data.csv"
+            path.write_text(
+                "sample,source_file,axis_kind,x,intensity,uncertainty\n"
+                "one,a.xy,two_theta,1,10,\n"
+                "two,b.xy,two_theta,1,20,\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "multiple samples"):
+                load_spectrum(path, axis_kind="auto")
+
     def test_parse_text_rejects_files_without_two_numeric_columns(self):
         with self.assertRaises(ValueError):
             parse_spectrum_text("angle only\n20\n21\n")
