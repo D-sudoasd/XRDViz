@@ -41,7 +41,11 @@ assert hasattr(window, "heatmap_points_spin")
 assert hasattr(window, "template_combo")
 assert hasattr(window, "legend_location_combo")
 assert isinstance(window.navigation_toolbar, NavigationToolbar2QT)
-assert window.canvas.parent() is window.plot_panel
+assert window.canvas.parent() is window.canvas_container
+assert window.canvas.accessibleName() == "XRDViz plot preview"
+assert window.canvas.accessibleDescription()
+assert window.preview_summary_label.text()
+assert all(action.text() != "Save" or not action.isVisible() for action in window.navigation_toolbar.actions())
 assert window.nature_status_label.text().startswith("Nature:")
 assert "issue(s)" in window.nature_status_label.text()
 assert window.nature_status_label.toolTip()
@@ -53,6 +57,8 @@ window._sync_controls_from_settings()
 assert window.colormap_combo.currentData() == "blue_rose"
 assert window.y_tick_labels_check.isChecked() is False
 assert window.heatmap_points_spin.isEnabled() is False
+assert window.small_multiples_columns_spin.isEnabled() is False
+assert window.panel_labels_check.isEnabled() is False
 assert window.color_by_combo.isEnabled() is False
 assert window.colormap_combo.isEnabled() is False
 assert window.show_colorbar_check.isEnabled() is False
@@ -74,6 +80,21 @@ assert window.color_by_combo.isEnabled() is False
 assert window.colormap_combo.isEnabled() is True
 assert window.show_colorbar_check.isEnabled() is True
 assert window.heatmap_points_spin.isEnabled() is True
+window.view_mode_combo.blockSignals(True)
+for mode in ("map", "derived", "refinement", "small_multiples"):
+    window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData(mode))
+    window._update_batch_control_state()
+    if mode in ("map", "derived"):
+        assert window.x_axis_combo.isEnabled() is False
+        assert window.energy_spin.isEnabled() is False
+    if mode in ("map", "derived", "small_multiples"):
+        assert window.fit_components_check.isEnabled() is False
+    if mode == "refinement":
+        assert window.fit_components_check.isEnabled() is True
+    if mode == "small_multiples":
+        assert window.small_multiples_columns_spin.isEnabled() is True
+window.view_mode_combo.blockSignals(False)
+window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("overlay"))
 window.color_by_combo.setCurrentIndex(window.color_by_combo.findData("frame"))
 window.colormap_combo.setCurrentIndex(window.colormap_combo.findData("viridis"))
 window.show_colorbar_check.setChecked(True)
@@ -81,6 +102,7 @@ window.show_every_n_spin.setValue(2)
 window.heatmap_points_spin.setValue(64)
 window.template_combo.setCurrentIndex(window.template_combo.findData("science_single"))
 window.legend_location_combo.setCurrentIndex(window.legend_location_combo.findData("outside right"))
+window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("heatmap"))
 from pathlib import Path
 import tempfile
 with tempfile.TemporaryDirectory() as tmp:
@@ -137,6 +159,54 @@ with tempfile.TemporaryDirectory() as tmp:
     assert "Publication bundle exported" in window.statusBar().currentMessage()
     assert "view mode: heatmap" in outputs.report.read_text(encoding="utf-8")
 app.processEvents()
+window.close()
+app.processEvents()
+"""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(SRC)
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_shown_window_keeps_canvas_usable_and_preview_screen_sized(self):
+        script = """
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from PySide6.QtWidgets import QApplication, QScrollArea
+from xrdviz.ui.main_window import MainWindow
+app = QApplication([])
+window = MainWindow()
+window.resize(1280, 760)
+window.show()
+app.processEvents()
+splitter = window.splitter
+sizes = splitter.sizes()
+assert window.size().width() == 1280, window.size()
+assert sizes[1] >= 500, sizes
+assert window.canvas.width() >= 500, window.canvas.size()
+assert window.canvas.width() == sizes[1], (window.canvas.size(), sizes)
+assert isinstance(splitter.widget(0), QScrollArea)
+assert isinstance(splitter.widget(2), QScrollArea)
+assert window.figure.dpi == 100.0, window.figure.dpi
+preview_pixels = tuple(round(float(value) * window.figure.dpi) for value in window.figure.get_size_inches())
+assert preview_pixels[0] <= window.canvas.width() + 1, (preview_pixels, window.canvas.size())
+assert preview_pixels[1] <= window.canvas.height() + 1, (preview_pixels, window.canvas.size())
+assert abs(
+    (preview_pixels[0] / preview_pixels[1])
+    - (window.state.settings.figure_width_in / window.state.settings.figure_height_in)
+) < 0.02, (preview_pixels, window.state.settings)
+assert window.canvas.width() <= sizes[1] + 1, (window.canvas.size(), sizes)
+assert window.splitter.widget(2).horizontalScrollBarPolicy().name == "ScrollBarAlwaysOff"
+assert window.state.settings.dpi == 600
 window.close()
 app.processEvents()
 """

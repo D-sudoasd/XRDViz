@@ -146,11 +146,21 @@ def nature_compliance_issues(state: ProjectState) -> list[str]:
             issues.append("all mapped temperature values must be finite")
         elif temperature_unit not in {"°C", "K"}:
             issues.append("all mapped temperature values must declare compatible °C or K units")
-    if view_mode in {"heatmap", "gradient_stack"} and colormap in DANGEROUS_CONTINUOUS_COLORMAPS:
+    if view_mode in {"heatmap", "gradient_stack", "map"} and colormap in DANGEROUS_CONTINUOUS_COLORMAPS:
         issues.append(
             f"colormap {getattr(settings, 'colormap', '')!r} is not allowed for "
             "heatmap/gradient views"
         )
+    if view_mode == "map" and not getattr(settings, "show_colorbar", False):
+        issues.append("a quantitative 2D map requires a visible intensity colorbar")
+    if view_mode == "map" and state.map_data is not None and state.map_data.kind == "cake":
+        if state.map_data.metadata.get("processing") == "flat_detector_cake_preview":
+            issues.append(
+                "the cake uses the flat-detector preview without distortion, polarization, solid-angle, "
+                "or instrument-calibration corrections"
+            )
+    if view_mode == "refinement" and state.fit is not None and state.fit.converged is False:
+        issues.append("the displayed fit is marked as not converged")
     if (
         view_mode == "gradient_stack"
         and getattr(settings, "show_colorbar", False)
@@ -171,8 +181,19 @@ def nature_compliance_issues(state: ProjectState) -> list[str]:
     ):
         issues.append("outside-right legend cannot be combined with a gradient colorbar")
 
-    if not any(_has_visible_spectrum_data(layer) for layer in state.spectra):
-        issues.append("at least one visible spectrum line with data is required")
+    has_visible_data = (
+        any(_has_visible_spectrum_data(layer) for layer in state.spectra)
+        or _has_visible_fit_data(state)
+        or _has_visible_map_data(state)
+        or _has_visible_derived_data(state)
+    )
+    if not has_visible_data:
+        if view_mode == "map" and state.map_data is not None:
+            issues.append(
+                "map data must contain at least one finite populated intensity value"
+            )
+        else:
+            issues.append("at least one visible spectrum line with data is required")
     elif not _has_finite_display_data(state):
         issues.append("the current display range must contain finite visible spectrum data")
 
@@ -217,8 +238,89 @@ def _has_visible_spectrum_data(layer: Any) -> bool:
         return False
 
 
+def _has_visible_fit_data(state: ProjectState) -> bool:
+    if state.settings.view_mode != "refinement" or state.fit is None:
+        return False
+    try:
+        return sum(
+            1
+            for values in zip(state.fit.x, state.fit.observed, state.fit.calculated)
+            if all(math.isfinite(_number(value)) for value in values)
+        ) >= 2
+    except TypeError:
+        return False
+
+
+def _has_visible_map_data(state: ProjectState) -> bool:
+    if state.settings.view_mode != "map" or state.map_data is None:
+        return False
+    try:
+        intensity_values = state.map_data.intensity.flat
+        if state.map_data.counts is None:
+            return bool(state.map_data.intensity.size) and any(
+                math.isfinite(_number(value)) for value in intensity_values
+            )
+        return any(
+            math.isfinite(_number(value)) and _number(count) > 0.0
+            for value, count in zip(intensity_values, state.map_data.counts.flat)
+        )
+    except (AttributeError, TypeError):
+        return False
+
+
+def _has_visible_derived_data(state: ProjectState) -> bool:
+    if state.settings.view_mode != "derived" or state.derived_plot is None:
+        return False
+    try:
+        return sum(
+            1
+            for x_value, y_value in zip(state.derived_plot.x, state.derived_plot.y)
+            if math.isfinite(_number(x_value)) and math.isfinite(_number(y_value))
+        ) >= 2
+    except TypeError:
+        return False
+
+
 def _has_finite_display_data(state: ProjectState) -> bool:
     settings = state.settings
+    if settings.view_mode == "map":
+        return _has_visible_map_data(state)
+    if settings.view_mode == "derived":
+        if not _has_visible_derived_data(state):
+            return False
+        pairs = [
+            (float(x_value), float(y_value))
+            for x_value, y_value in zip(state.derived_plot.x, state.derived_plot.y)
+            if math.isfinite(_number(x_value)) and math.isfinite(_number(y_value))
+        ]
+        x_min = min(value[0] for value in pairs)
+        x_max = max(value[0] for value in pairs)
+        if settings.x_min is not None and x_max < settings.x_min:
+            return False
+        if settings.x_max is not None and x_min > settings.x_max:
+            return False
+        return True
+    if settings.view_mode == "refinement":
+        if state.fit is None:
+            return False
+        try:
+            x_values = convert_x(state.fit.x, state.fit.axis_kind, settings.x_axis, settings.energy_kev)
+            pairs = [
+                (float(x_value), float(observed), float(calculated))
+                for x_value, observed, calculated in zip(x_values, state.fit.observed, state.fit.calculated)
+                if all(math.isfinite(_number(value)) for value in (x_value, observed, calculated))
+            ]
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if len(pairs) < 2:
+            return False
+        fit_x_min = min(value[0] for value in pairs)
+        fit_x_max = max(value[0] for value in pairs)
+        if settings.x_min is not None and fit_x_max < settings.x_min:
+            return False
+        if settings.x_max is not None and fit_x_min > settings.x_max:
+            return False
+        return True
     if settings.view_mode == "heatmap":
         try:
             _x_grid, _row_values, matrix = make_heatmap_matrix(state)

@@ -8,7 +8,7 @@ from typing import Sequence
 from xrdviz.axes import convert_x
 from xrdviz.cif import load_cif_phase, peak_position_for_axis
 from xrdviz.io import load_spectrum
-from xrdviz.models import OKABE_ITO, PhaseLayer, PhasePeak, PlotSettings, ProjectState, SpectrumLayer, default_axis_label
+from xrdviz.models import OKABE_ITO, PhaseLayer, PlotSettings, ProjectState, SpectrumLayer, default_axis_label
 from xrdviz.plot.style import nature_single_column
 
 

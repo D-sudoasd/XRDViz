@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from xrdviz.analysis import DerivedPlot
+    from xrdviz.fit import PatternFit
+    from xrdviz.maps import MapData
 
 
 AXIS_KINDS = {"two_theta", "d", "q"}
-VIEW_MODES = {"overlay", "stack", "gradient_stack", "heatmap"}
+VIEW_MODES = {
+    "overlay",
+    "stack",
+    "gradient_stack",
+    "heatmap",
+    "refinement",
+    "small_multiples",
+    "map",
+    "derived",
+}
 BATCH_FIELDS = {"order", "frame", "time", "temperature", "color_value"}
+UNCERTAINTY_MODES = {"none", "band", "bars"}
 LEGEND_LOCATIONS = {
     "upper right",
     "upper left",
@@ -31,6 +46,7 @@ PUBLICATION_PALETTE = [
 OKABE_ITO = PUBLICATION_PALETTE
 PLOT_TEXT_COLOR = "#2C2C2C"
 PLOT_AXIS_COLOR = "#3F3F3F"
+# Muted guide/grid elements retain the original neutral publication tone.
 PLOT_MUTED_COLOR = "#9A9A9A"
 
 
@@ -85,6 +101,9 @@ class SpectrumLayer:
     temperature_unit: str = ""
     group: str = ""
     color_value: float | None = None
+    # Appended after the legacy fields to preserve positional construction.
+    y_error: list[float] = field(default_factory=list)
+    wavelength_angstrom: float | None = None
 
     def __post_init__(self) -> None:
         self.axis_kind = normalize_axis_kind(self.axis_kind)
@@ -92,10 +111,22 @@ class SpectrumLayer:
         self.y = [float(value) for value in self.y]
         self.raw_x = [float(value) for value in self.raw_x] if self.raw_x else list(self.x)
         self.raw_y = [float(value) for value in self.raw_y] if self.raw_y else list(self.y)
+        self.y_error = [float(value) for value in self.y_error]
+        self.wavelength_angstrom = (
+            None if self.wavelength_angstrom is None else float(self.wavelength_angstrom)
+        )
         if len(self.x) != len(self.y):
             raise ValueError("Spectrum x and y arrays must have the same length")
         if len(self.raw_x) != len(self.raw_y):
             raise ValueError("Raw spectrum x and y arrays must have the same length")
+        if self.y_error and len(self.y_error) != len(self.y):
+            raise ValueError("Spectrum uncertainty values must match the spectrum length")
+        if any(not math.isfinite(value) or value < 0 for value in self.y_error):
+            raise ValueError("Spectrum uncertainty values must be finite and non-negative")
+        if self.wavelength_angstrom is not None and (
+            not math.isfinite(self.wavelength_angstrom) or self.wavelength_angstrom <= 0
+        ):
+            raise ValueError("Spectrum wavelength must be finite and positive")
         self.order = int(self.order)
         self.frame_index = None if self.frame_index is None else int(self.frame_index)
         self.time_s = None if self.time_s is None else float(self.time_s)
@@ -162,6 +193,30 @@ class PhaseLayer:
 
 
 @dataclass(slots=True)
+class PlotAnnotation:
+    """A user-declared vertical guide in the current display coordinate."""
+
+    x: float
+    text: str
+    color: str = PLOT_TEXT_COLOR
+    y_fraction: float = 0.92
+    show_line: bool = True
+
+    def __post_init__(self) -> None:
+        self.x = float(self.x)
+        self.y_fraction = float(self.y_fraction)
+        if not math.isfinite(self.x):
+            raise ValueError("Annotation x must be finite")
+        if not math.isfinite(self.y_fraction) or not 0.0 <= self.y_fraction <= 1.0:
+            raise ValueError("Annotation y_fraction must be in [0, 1]")
+        self.text = str(self.text).strip()
+        if not self.text:
+            raise ValueError("Annotation text must not be empty")
+        self.color = str(self.color or PLOT_TEXT_COLOR)
+        self.show_line = bool(self.show_line)
+
+
+@dataclass(slots=True)
 class PlotSettings:
     x_axis: str = "two_theta"
     energy_kev: float = 8.0478
@@ -203,6 +258,18 @@ class PlotSettings:
     margin_right: float = 0.98
     margin_top: float = 0.96
     margin_bottom: float = 0.16
+    # New options are appended after all legacy fields to preserve positional APIs.
+    uncertainty_mode: str = "none"
+    uncertainty_alpha: float = 0.22
+    errorbar_stride: int = 1
+    show_fit_components: bool = True
+    show_fit_background: bool = True
+    show_fit_metrics: bool = True
+    small_multiples_columns: int = 2
+    show_panel_labels: bool = True
+    inset_enabled: bool = False
+    inset_x_min: float | None = None
+    inset_x_max: float | None = None
 
     def __post_init__(self) -> None:
         self.x_axis = normalize_axis_kind(self.x_axis)
@@ -217,8 +284,15 @@ class PlotSettings:
             or self.figure_height_in <= 0
         ):
             raise ValueError("Figure dimensions must be positive")
-        if not math.isfinite(float(self.dpi)) or self.dpi <= 0:
-            raise ValueError("DPI must be positive")
+        if isinstance(self.dpi, bool):
+            raise ValueError("DPI must be a positive integer")
+        try:
+            dpi_value = float(self.dpi)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("DPI must be a positive integer") from exc
+        if not math.isfinite(dpi_value) or dpi_value <= 0 or not dpi_value.is_integer():
+            raise ValueError("DPI must be a positive integer")
+        self.dpi = int(dpi_value)
         if self.x_min is not None and not math.isfinite(float(self.x_min)):
             raise ValueError("x_min must be finite")
         if self.x_max is not None and not math.isfinite(float(self.x_max)):
@@ -237,6 +311,14 @@ class PlotSettings:
                 raise ValueError(f"{field_name} must be finite")
         if self.view_mode not in VIEW_MODES:
             raise ValueError(f"Unsupported view mode: {self.view_mode!r}")
+        if self.uncertainty_mode not in UNCERTAINTY_MODES:
+            raise ValueError(f"Unsupported uncertainty mode: {self.uncertainty_mode!r}")
+        if not math.isfinite(float(self.uncertainty_alpha)) or not 0.0 < self.uncertainty_alpha <= 1.0:
+            raise ValueError("uncertainty_alpha must be finite and in (0, 1]")
+        errorbar_stride = float(self.errorbar_stride)
+        if not math.isfinite(errorbar_stride) or not errorbar_stride.is_integer() or errorbar_stride < 1:
+            raise ValueError("errorbar_stride must be a positive integer")
+        self.errorbar_stride = int(errorbar_stride)
         if self.sort_by not in BATCH_FIELDS:
             raise ValueError(f"Unsupported sort field: {self.sort_by!r}")
         if self.color_by not in BATCH_FIELDS:
@@ -249,6 +331,21 @@ class PlotSettings:
         if not math.isfinite(heatmap_points) or not heatmap_points.is_integer() or heatmap_points < 2:
             raise ValueError("heatmap_points must be at least 2")
         self.heatmap_points = int(heatmap_points)
+        panel_columns = float(self.small_multiples_columns)
+        if not math.isfinite(panel_columns) or not panel_columns.is_integer() or not 1 <= panel_columns <= 6:
+            raise ValueError("small_multiples_columns must be an integer from 1 to 6")
+        self.small_multiples_columns = int(panel_columns)
+        if (self.inset_x_min is None) != (self.inset_x_max is None):
+            raise ValueError("Inset x min and max must be provided together")
+        if self.inset_enabled and self.inset_x_min is None:
+            raise ValueError("Inset x min and max are required when the inset is enabled")
+        if self.inset_x_min is not None and self.inset_x_max is not None:
+            self.inset_x_min = float(self.inset_x_min)
+            self.inset_x_max = float(self.inset_x_max)
+            if not math.isfinite(self.inset_x_min) or not math.isfinite(self.inset_x_max):
+                raise ValueError("Inset x range must be finite")
+            if self.inset_x_min >= self.inset_x_max:
+                raise ValueError("Inset x min must be smaller than inset x max")
         if self.legend_location not in LEGEND_LOCATIONS:
             raise ValueError(f"Unsupported legend location: {self.legend_location!r}")
         if not (0.0 <= self.margin_left < self.margin_right <= 1.0):
@@ -262,10 +359,23 @@ class ProjectState:
     spectra: list[SpectrumLayer] = field(default_factory=list)
     phases: list[PhaseLayer] = field(default_factory=list)
     settings: PlotSettings = field(default_factory=PlotSettings)
+    # New analysis state is appended after all legacy fields for positional compatibility.
+    fit: PatternFit | None = None
+    map_data: MapData | None = None
+    derived_plot: DerivedPlot | None = None
+    annotations: list[PlotAnnotation] = field(default_factory=list)
 
 
 def project_to_dict(state: ProjectState) -> dict[str, Any]:
-    return asdict(state)
+    return {
+        "spectra": [asdict(layer) for layer in state.spectra],
+        "phases": [asdict(layer) for layer in state.phases],
+        "fit": asdict(state.fit) if state.fit is not None else None,
+        "map_data": state.map_data.to_dict() if state.map_data is not None else None,
+        "derived_plot": state.derived_plot.to_dict() if state.derived_plot is not None else None,
+        "annotations": [asdict(annotation) for annotation in state.annotations],
+        "settings": asdict(state.settings),
+    }
 
 
 def project_from_dict(data: dict[str, Any]) -> ProjectState:
@@ -277,4 +387,31 @@ def project_from_dict(data: dict[str, Any]) -> ProjectState:
         phase_data = dict(item)
         phase_data["peaks"] = peaks
         phases.append(PhaseLayer(**phase_data))
-    return ProjectState(spectra=spectra, phases=phases, settings=settings)
+    fit = None
+    fit_data = data.get("fit")
+    if fit_data is not None:
+        from xrdviz.fit import FitComponent, PatternFit
+
+        parsed_fit = dict(fit_data)
+        parsed_fit["components"] = [FitComponent(**component) for component in fit_data.get("components", [])]
+        fit = PatternFit(**parsed_fit)
+    map_data = None
+    if data.get("map_data") is not None:
+        from xrdviz.maps import MapData
+
+        map_data = MapData.from_dict(data["map_data"])
+    derived_plot = None
+    if data.get("derived_plot") is not None:
+        from xrdviz.analysis import DerivedPlot
+
+        derived_plot = DerivedPlot.from_dict(data["derived_plot"])
+    annotations = [PlotAnnotation(**item) for item in data.get("annotations", [])]
+    return ProjectState(
+        spectra=spectra,
+        phases=phases,
+        fit=fit,
+        map_data=map_data,
+        derived_plot=derived_plot,
+        annotations=annotations,
+        settings=settings,
+    )
