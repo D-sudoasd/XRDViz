@@ -209,7 +209,7 @@ class RendererTests(unittest.TestCase):
         self.assertTrue(_has_visible_tick_text(axes["main"].get_yticklabels()))
         self.assertTrue(_has_visible_y_tick_marks(axes["main"]))
 
-    def test_panel_title_is_drawn_inside_axes(self):
+    def test_panel_title_is_wrapped_above_axes(self):
         from xrdviz.plot.renderer import render_project
 
         state = ProjectState(
@@ -218,11 +218,14 @@ class RendererTests(unittest.TestCase):
         )
 
         _fig, axes = render_project(state)
-        text = " ".join(item.get_text() for item in axes["main"].texts)
+        title = axes["panel_title"]
 
-        self.assertIn("Nb-free", text)
+        self.assertEqual(title.get_text(), "Nb-free")
+        self.assertGreaterEqual(title.get_position()[1], 1.0)
 
     def test_phase_row_labels_are_outside_data_area(self):
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
         from xrdviz.plot.renderer import render_project
 
         state = ProjectState(
@@ -234,11 +237,19 @@ class RendererTests(unittest.TestCase):
             settings=PlotSettings(x_axis="d", x_min=0.9, x_max=3.0),
         )
 
-        _fig, axes = render_project(state)
+        figure, axes = render_project(state)
         phase_texts = [text for text in axes["main"].texts if text.get_text() in {"B2", "FCC"}]
+        canvas = FigureCanvasAgg(figure)
+        canvas.draw()
+        renderer = canvas.get_renderer()
 
         self.assertEqual(len(phase_texts), 2)
-        self.assertTrue(all(text.get_position()[0] < 0.0 for text in phase_texts))
+        self.assertTrue(
+            all(
+                text.get_window_extent(renderer).x1 <= axes["main"].bbox.x0
+                for text in phase_texts
+            )
+        )
         self.assertTrue(all(not text.get_clip_on() for text in phase_texts))
 
     def test_gradient_stack_applies_show_every_n_and_colorbar(self):

@@ -196,7 +196,11 @@ assert window.canvas.width() >= 500, window.canvas.size()
 assert window.canvas.width() == sizes[1], (window.canvas.size(), sizes)
 assert isinstance(splitter.widget(0), QScrollArea)
 assert isinstance(splitter.widget(2), QScrollArea)
-assert window.figure.dpi == 100.0, window.figure.dpi
+assert 0.0 < window.figure.dpi <= window.state.settings.dpi, window.figure.dpi
+figure_inches = tuple(float(value) for value in window.figure.get_size_inches())
+inch_tolerance = 1.0 / window.figure.dpi + 1e-6
+assert abs(figure_inches[0] - window.state.settings.figure_width_in) <= inch_tolerance, figure_inches
+assert abs(figure_inches[1] - window.state.settings.figure_height_in) <= inch_tolerance, figure_inches
 preview_pixels = tuple(round(float(value) * window.figure.dpi) for value in window.figure.get_size_inches())
 assert preview_pixels[0] <= window.canvas.width() + 1, (preview_pixels, window.canvas.size())
 assert preview_pixels[1] <= window.canvas.height() + 1, (preview_pixels, window.canvas.size())
