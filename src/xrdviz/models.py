@@ -76,7 +76,7 @@ def default_axis_label(axis_kind: str) -> str:
         return r"2$\theta$ (deg)"
     if axis_kind == "d":
         return r"$d$-spacing ($\AA$)"
-    return r"$Q$ (A$^{-1}$)"
+    return r"$Q$ ($\AA^{-1}$)"
 
 
 @dataclass(slots=True)

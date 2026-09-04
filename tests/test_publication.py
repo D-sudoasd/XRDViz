@@ -670,6 +670,47 @@ class PublicationWorkflowTests(unittest.TestCase):
         self.assertEqual(manifest["nature"]["status"], "FAIL")
         self.assertTrue(any("compatible °C or K" in issue for issue in manifest["nature"]["issues"]))
 
+    def test_gradient_colorbar_is_declared_as_combination_raster_content(self):
+        state = ProjectState(
+            spectra=[
+                SpectrumLayer(
+                    name=f"{temperature:.0f} °C",
+                    x=[20.0, 30.0, 40.0],
+                    y=[1.0, 2.0 + index, 1.0],
+                    temperature=temperature,
+                    temperature_unit="°C",
+                    order=index,
+                )
+                for index, temperature in enumerate((25.0, 200.0, 400.0))
+            ],
+            settings=PlotSettings(
+                view_mode="gradient_stack",
+                color_by="temperature",
+                show_colorbar=True,
+                show_legend=False,
+                show_phase_legend=False,
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = export_publication_bundle(
+                state,
+                Path(tmp),
+                figure_name="gradient_stack.pdf",
+            )
+            manifest = json.loads(outputs.manifest.read_text(encoding="utf-8"))
+            report = outputs.report.read_text(encoding="utf-8")
+
+        figures = {item["format"]: item for item in manifest["figures"]}
+        for format_name in ("pdf", "svg"):
+            self.assertEqual(figures[format_name]["content"], "combination/raster")
+            self.assertFalse(figures[format_name]["vector_claim"])
+        for format_name in ("png", "tiff"):
+            self.assertEqual(figures[format_name]["content"], "raster")
+            self.assertFalse(figures[format_name]["vector_claim"])
+        self.assertIn("gradient-stack", report)
+        self.assertIn("continuous colorbar", report)
+
     def test_exported_empty_cake_bins_round_trip_through_map_csv(self):
         state = ProjectState(
             map_data=MapData(

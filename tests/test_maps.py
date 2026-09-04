@@ -244,6 +244,8 @@ def test_cake_helper_maps_detector_cake_result_and_keeps_counts():
     np.testing.assert_array_equal(data.counts, cake.counts)
     assert data.x_unit == "deg"
     assert data.y_unit == "deg"
+    assert data.x_label == r"$2\theta$"
+    assert data.y_label == r"$\chi$"
 
 
 def test_cake_helper_rejects_missing_intensity_instead_of_inventing_data():

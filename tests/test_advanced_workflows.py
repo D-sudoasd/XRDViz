@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 import json
+import math
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -92,6 +93,97 @@ class AdvancedProjectWorkflowTests(unittest.TestCase):
         )
         self.assertLess(metric_text.get_position()[0], 0.5)
         self.assertEqual(metric_text.get_horizontalalignment(), "left")
+
+    def test_dense_refinement_thins_only_display_markers_and_reports_the_rule(self):
+        point_count = 640
+        x = [25.0 + index * 0.08 for index in range(point_count)]
+        calculated = [
+            50.0 + 900.0 * math.exp(-0.5 * ((value - 44.0) / 0.7) ** 2)
+            for value in x
+        ]
+        observed = [
+            value + 4.0 * math.sin(index * 0.31)
+            for index, value in enumerate(calculated)
+        ]
+        state = ProjectState(
+            fit=PatternFit(
+                name="dense fit",
+                x=x,
+                observed=observed,
+                calculated=calculated,
+            ),
+            settings=PlotSettings(
+                view_mode="refinement",
+                normalize=False,
+                show_fit_components=False,
+                show_fit_background=False,
+                show_fit_metrics=False,
+            ),
+        )
+
+        _figure, axes = render_project(state)
+        observed_line = next(
+            line for line in axes["main"].lines if line.get_label() == "Observed"
+        )
+        calculated_line = next(
+            line for line in axes["main"].lines if line.get_label() == "Calculated"
+        )
+        difference_line = next(
+            line for line in axes["residual"].lines if line.get_label() == "Difference"
+        )
+
+        self.assertLess(len(observed_line.get_xdata()), point_count)
+        self.assertLessEqual(len(observed_line.get_xdata()), 50)
+        self.assertGreaterEqual(len(observed_line.get_xdata()), 2)
+        self.assertEqual(len(calculated_line.get_xdata()), point_count)
+        self.assertEqual(len(difference_line.get_xdata()), point_count)
+        self.assertEqual(axes["observed_marker_indices"][0], 0)
+        self.assertEqual(axes["observed_marker_indices"][-1], point_count - 1)
+        self.assertIn("display markers", axes["text_alternative"])
+        self.assertIn(f"of {point_count}", axes["text_alternative"])
+
+    def test_nonuniform_refinement_markers_are_spaced_in_display_coordinates(self):
+        clustered_x = [25.0 + index * 0.001 for index in range(500)]
+        spread_x = [25.5 + index * (50.5 / 139.0) for index in range(140)]
+        x = [*clustered_x, *spread_x]
+        calculated = [
+            50.0 + 900.0 * math.exp(-0.5 * ((value - 44.0) / 0.7) ** 2)
+            for value in x
+        ]
+        state = ProjectState(
+            fit=PatternFit(
+                name="nonuniform fit",
+                x=x,
+                observed=[
+                    value + 4.0 * math.sin(index * 0.31)
+                    for index, value in enumerate(calculated)
+                ],
+                calculated=calculated,
+            ),
+            settings=PlotSettings(
+                view_mode="refinement",
+                normalize=False,
+                show_fit_components=False,
+                show_fit_background=False,
+                show_fit_metrics=False,
+            ),
+        )
+
+        figure, axes = render_project(state)
+        observed_line = next(
+            line for line in axes["main"].lines if line.get_label() == "Observed"
+        )
+        display_x = axes["main"].transData.transform(
+            [(float(value), 0.0) for value in observed_line.get_xdata()]
+        )[:, 0]
+        gaps_points = [
+            abs(float(right - left)) * 72.0 / figure.dpi
+            for left, right in zip(display_x, display_x[1:])
+        ]
+
+        self.assertGreaterEqual(min(gaps_points), 3.9)
+        self.assertEqual(axes["observed_marker_indices"][0], 0)
+        self.assertEqual(axes["observed_marker_indices"][-1], len(x) - 1)
 
     def test_overlay_view_can_draw_uncertainty_band(self):
         state = ProjectState(

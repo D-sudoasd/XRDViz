@@ -72,10 +72,7 @@ def render_derived(state: ProjectState, fig: Any) -> tuple[Any, dict[str, Any]]:
     metric_artist = None
     if data.metrics:
         metric_text = prepare_metric_lines(
-            (
-                f"{_metric_label(key)}: {_format_metric(value)}"
-                for key, value in data.metrics.items()
-            ),
+            _metric_lines(data.metrics),
             settings,
         )
         reserve_axes_top(
@@ -119,10 +116,35 @@ def _format_metric(value: Any) -> str:
     return str(value)
 
 
+def _metric_lines(metrics: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for key, value in metrics.items():
+        if key == "size_unit" and "crystallite_size" in metrics:
+            continue
+        if key == "wavelength_unit" and "wavelength" in metrics:
+            continue
+        formatted = _format_metric(value)
+        if key == "crystallite_size" and metrics.get("size_unit"):
+            formatted = f"{formatted} {metrics['size_unit']}"
+        elif key == "wavelength" and metrics.get("wavelength_unit"):
+            formatted = f"{formatted} {metrics['wavelength_unit']}"
+        lines.append(f"{_metric_label(key)}: {formatted}")
+    return lines
+
+
 def _metric_label(key: Any) -> str:
     """Render persisted metric keys as readable prose without changing them."""
 
-    return str(key).replace("_", " ")
+    labels = {
+        "fwhm": "FWHM",
+        "k": r"$K$",
+        "microstrain": r"$\varepsilon$",
+        "n_points": r"$n$",
+        "r_squared": r"$R^2$",
+        "wavelength": r"$\lambda$",
+    }
+    normalized = str(key)
+    return labels.get(normalized, normalized.replace("_", " ").capitalize())
 
 
 def _polish_axis(ax: Any, settings: Any) -> None:

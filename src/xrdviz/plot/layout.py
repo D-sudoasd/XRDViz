@@ -5,6 +5,10 @@ from itertools import combinations
 from typing import Any, Iterable, Mapping, Sequence
 
 
+_DIRECT_LABEL_LEADER_X = 1.016
+_DIRECT_LABEL_TEXT_X = 1.025
+
+
 def text_width_points(
     text: str,
     *,
@@ -134,6 +138,13 @@ def phase_label_offset_points(settings: Any) -> float:
     return 3.0
 
 
+def direct_label_decoration_points(settings: Any) -> float:
+    """Reserve the axes-relative direct-label offset on the fixed canvas."""
+
+    figure_width_points = max(float(settings.figure_width_in) * 72.0, 1.0)
+    return max(8.0, (_DIRECT_LABEL_TEXT_X - 1.0) * figure_width_points + 2.0)
+
+
 def safe_subplot_margins(
     settings: Any,
     *,
@@ -220,11 +231,11 @@ def add_direct_labels(
     handles: Sequence[Any],
     labels: Sequence[str],
     settings: Any,
-) -> list[Any]:
+) -> tuple[list[Any], list[Any]]:
     """Place curve labels in a measured side gutter with collision-free leaders."""
 
     if not handles:
-        return []
+        return [], []
     if len(handles) != len(labels):
         raise ValueError("Direct-label handles and labels must have matching lengths")
 
@@ -254,31 +265,47 @@ def add_direct_labels(
         ),
     )
 
+    from matplotlib.lines import Line2D
+
     artists: list[Any] = []
+    leaders: list[Any] = []
     for handle, label, point, center in zip(handles, labels, anchor_points, centers):
+        anchor_display = ax.transData.transform(point)
+        anchor_axes = ax.transAxes.inverted().transform(anchor_display)
+        # Stop leaders before the text gutter.  Matplotlib ``Annotation``
+        # connects to the target text box itself, so a diagonal leader for an
+        # upper label can pass through lower labels that share the same left
+        # edge.  Keeping the complete segment to the left of every text box
+        # makes that geometry impossible while retaining an unambiguous,
+        # colour-coded association with the curve endpoint.
+        leader = Line2D(
+            [float(anchor_axes[0]), _DIRECT_LABEL_LEADER_X],
+            [float(anchor_axes[1]), float(center)],
+            transform=ax.transAxes,
+            color=handle.get_color(),
+            linewidth=max(0.45, float(settings.line_width) * 0.65),
+            solid_capstyle="round",
+            clip_on=False,
+            label="_nolegend_",
+            zorder=4,
+        )
+        ax.add_line(leader)
+        leaders.append(leader)
         artists.append(
-            ax.annotate(
+            ax.text(
+                _DIRECT_LABEL_TEXT_X,
+                center,
                 label,
-                xy=point,
-                xycoords="data",
-                xytext=(1.015, center),
-                textcoords=ax.transAxes,
+                transform=ax.transAxes,
                 ha="left",
                 va="center",
                 fontsize=settings.tick_label_size,
                 color="#262626",
-                annotation_clip=False,
                 clip_on=False,
-                arrowprops={
-                    "arrowstyle": "-",
-                    "color": handle.get_color(),
-                    "linewidth": max(0.45, float(settings.line_width) * 0.65),
-                    "shrinkA": 1.5,
-                    "shrinkB": 1.5,
-                },
+                zorder=5,
             )
         )
-    return artists
+    return artists, leaders
 
 
 def stagger_rotated_label_tops(
@@ -389,6 +416,10 @@ def validate_figure_layout(
     *,
     collision_groups: Mapping[str, Sequence[Any]] | None = None,
     contained_artists: Sequence[tuple[Any, Any, str]] = (),
+    leader_groups: Mapping[
+        str, tuple[Sequence[Any], Sequence[Any]]
+    ]
+    | None = None,
 ) -> None:
     """Fail closed when a fixed-size export would clip or collide decorations."""
 
@@ -483,6 +514,30 @@ def validate_figure_layout(
                     f"{_artist_label(left)} overlaps {_artist_label(right)}. "
                     "Shorten labels, reduce displayed items, or use a larger canvas."
                 )
+
+    for group_name, (leaders, obstacles) in (leader_groups or {}).items():
+        for leader in leaders:
+            vertices = leader.get_transform().transform(leader.get_path().vertices)
+            for obstacle in obstacles:
+                if obstacle is None or not obstacle.get_visible():
+                    continue
+                obstacle_box = _artist_box(obstacle, renderer)
+                if obstacle_box is None:
+                    continue
+                if any(
+                    _segment_intersects_box(
+                        start,
+                        end,
+                        obstacle_box,
+                        tolerance=tolerance,
+                    )
+                    for start, end in zip(vertices, vertices[1:])
+                ):
+                    raise ValueError(
+                        f"Publication layout collision in {group_name}: a leader "
+                        f"crosses {_artist_label(obstacle)}. "
+                        "Shorten labels, reduce displayed items, or use a wider canvas."
+                    )
 
 
 def _rightmost_visible_point(ax: Any, handle: Any) -> tuple[float, float]:
@@ -607,3 +662,42 @@ def _boxes_overlap(left: Any, right: Any, *, tolerance: float) -> bool:
     overlap_x = min(left.x1, right.x1) - max(left.x0, right.x0)
     overlap_y = min(left.y1, right.y1) - max(left.y0, right.y0)
     return overlap_x > tolerance and overlap_y > tolerance
+
+
+def _segment_intersects_box(
+    start: Sequence[float],
+    end: Sequence[float],
+    box: Any,
+    *,
+    tolerance: float,
+) -> bool:
+    """Clip a display-space segment against an expanded artist rectangle."""
+
+    x0, y0 = (float(value) for value in start)
+    x1, y1 = (float(value) for value in end)
+    left = float(box.x0) - tolerance
+    right = float(box.x1) + tolerance
+    bottom = float(box.y0) - tolerance
+    top = float(box.y1) + tolerance
+    delta_x = x1 - x0
+    delta_y = y1 - y0
+    lower = 0.0
+    upper = 1.0
+    for denominator, numerator in (
+        (-delta_x, x0 - left),
+        (delta_x, right - x0),
+        (-delta_y, y0 - bottom),
+        (delta_y, top - y0),
+    ):
+        if abs(denominator) <= 1.0e-12:
+            if numerator < 0.0:
+                return False
+            continue
+        ratio = numerator / denominator
+        if denominator < 0.0:
+            lower = max(lower, ratio)
+        else:
+            upper = min(upper, ratio)
+        if lower > upper:
+            return False
+    return True
