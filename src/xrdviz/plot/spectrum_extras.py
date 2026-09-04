@@ -206,11 +206,11 @@ def render_small_multiples(state: ProjectState, fig: Any) -> tuple[Any, dict[str
                 ax.text(
                     0.02,
                     0.96,
-                    f"({chr(97 + index)})" if index < 26 else f"({index + 1})",
+                    chr(97 + index) if index < 26 else str(index + 1),
                     transform=ax.transAxes,
                     ha="left",
                     va="top",
-                    fontsize=settings.axis_label_size,
+                    fontsize=8.0,
                     fontweight="bold",
                     color=PLOT_TEXT_COLOR,
                 )

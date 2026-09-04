@@ -196,13 +196,19 @@ def write_publication_report(
             "",
             "## Figures",
             "",
-            "- content note: heatmap and 2D-map PDF/SVG exports contain raster image content and are not claimed to be all-vector.",
+            "- content note: heatmap and 2D-map exports, plus gradient-stack "
+            "PDF/SVG exports with a continuous colorbar, contain raster image "
+            "content and are not claimed to be all-vector.",
         ]
     )
     for figure_path in figure_paths:
         display_path = _display_path(figure_path, root)
         suffix = Path(figure_path).suffix.lower().lstrip(".") or "unknown"
-        content = _figure_content(settings.view_mode, suffix)
+        content = _figure_content(
+            settings.view_mode,
+            suffix,
+            show_colorbar=settings.show_colorbar,
+        )
         lines.append(
             f"- `{display_path}` ({suffix.upper()}; {content}; "
             f"target {target_width_mm:.3f} mm x {target_height_mm:.3f} mm)"
@@ -249,6 +255,10 @@ def write_publication_report(
                 f"- wavelength: {state.fit.wavelength_angstrom:.8g} angstrom"
             )
         lines.append(f"- points: {len(state.fit.x)}")
+        lines.append(
+            "- display markers: observed symbols may be thinned to final-size pixel "
+            "density; calculated/residual curves and exported fit data retain all points"
+        )
         lines.append(f"- components: {len(state.fit.components)}")
         lines.append(f"- uncertainty: {'sigma provided' if state.fit.sigma else 'not provided'}")
         if state.fit.converged is not None:
@@ -927,7 +937,11 @@ def _build_manifest(
     figures: list[dict[str, object]] = []
     for format_name in ("pdf", "svg", "tiff", "png"):
         path = figure_map[format_name]
-        content = _figure_content(settings.view_mode, format_name)
+        content = _figure_content(
+            settings.view_mode,
+            format_name,
+            show_colorbar=settings.show_colorbar,
+        )
         figures.append(
             {
                 "path": _relative_path(path, root),
@@ -1123,10 +1137,21 @@ def _display_path(path: str | Path, root: Path) -> str:
     return _relative_path(path, root)
 
 
-def _figure_content(view_mode: str, format_name: str) -> str:
-    if str(view_mode).strip().lower() in {"heatmap", "map"}:
+def _figure_content(
+    view_mode: str,
+    format_name: str,
+    *,
+    show_colorbar: bool = False,
+) -> str:
+    normalized_format = str(format_name).strip().lower().lstrip(".")
+    if normalized_format in {"png", "tif", "tiff"}:
+        return "raster"
+    normalized_mode = str(view_mode).strip().lower()
+    if normalized_mode in {"heatmap", "map"} or (
+        normalized_mode == "gradient_stack" and show_colorbar
+    ):
         return "combination/raster"
-    if format_name in {"pdf", "svg"}:
+    if normalized_format in {"pdf", "svg"}:
         return "vector"
     return "raster"
 

@@ -133,7 +133,7 @@ class DerivedPlotBuilderTests(unittest.TestCase):
         self.assertEqual(plot.metrics["size_unit"], "nm")
         self.assertNotIn("uncertainty", plot.metrics)
         self.assertEqual(plot.source, "peaks.csv")
-        self.assertIn("deg", plot.labels["x"])
+        self.assertEqual(plot.labels["x"], r"$2\theta$ (deg)")
 
     def test_build_williamson_hall_plot_returns_transformed_scatter_and_fit_line(
         self,
@@ -164,7 +164,8 @@ class DerivedPlotBuilderTests(unittest.TestCase):
         self.assertAlmostEqual(plot.metrics["microstrain"], strain, places=12)
         self.assertAlmostEqual(plot.metrics["crystallite_size"], size_nm, places=8)
         self.assertAlmostEqual(plot.metrics["r_squared"], 1.0, places=12)
-        self.assertEqual(plot.labels["x"], "4 sin(theta)")
+        self.assertEqual(plot.labels["x"], r"$4\sin(\theta)$")
+        self.assertEqual(plot.labels["y"], r"$\beta\cos(\theta)$ (rad)")
         self.assertNotIn("uncertainty", plot.metrics)
 
     def test_build_rocking_curve_plot_reports_only_transparent_metrics(self) -> None:
@@ -181,7 +182,7 @@ class DerivedPlotBuilderTests(unittest.TestCase):
         self.assertAlmostEqual(plot.metrics["peak_position"], 2.0)
         self.assertAlmostEqual(plot.metrics["fwhm"], 2.0)
         self.assertAlmostEqual(plot.metrics["integrated_intensity"], 2.125)
-        self.assertEqual(plot.labels["x"], "omega (deg)")
+        self.assertEqual(plot.labels["x"], r"$\omega$ (deg)")
         self.assertNotIn("uncertainty", plot.metrics)
 
 

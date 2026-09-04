@@ -126,7 +126,7 @@ class DetectorImportDialog(_AcceptedDialog):
         self.distance = _double(1.0e-9, 1.0e9, 100.0)
         self.wavelength = _double(1.0e-9, 1.0e6, 1.5406)
         self.radial_unit = _combo(
-            [("2theta (deg)", "two_theta"), ("Q (A^-1)", "q"), ("d (A)", "d")]
+            [("2θ (deg)", "two_theta"), ("Q (Å⁻¹)", "q"), ("d (Å)", "d")]
         )
         self._updating_bin_budget = False
         self.radial_bins = QSpinBox()

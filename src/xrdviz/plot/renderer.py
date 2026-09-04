@@ -27,6 +27,7 @@ from xrdviz.plot.finalize import (
 )
 from xrdviz.plot.layout import (
     add_direct_labels,
+    direct_label_decoration_points,
     phase_label_offset_points,
     prepare_panel_title,
     prepare_side_labels,
@@ -194,8 +195,11 @@ def _render_project_inplace(
             left_labels=left_labels,
             left_decoration_points=phase_label_offset_points(settings),
             right_labels=right_labels,
-            right_decoration_points=(
-                32.0 if settings.legend_location == "outside right" else 8.0
+            right_decoration_points=max(
+                32.0 if settings.legend_location == "outside right" else 8.0,
+                direct_label_decoration_points(settings)
+                if prepared_direct_labels
+                else 0.0,
             ),
             colorbar=colorbar_ax is not None,
         ),
@@ -204,12 +208,14 @@ def _render_project_inplace(
     if annotation_artists:
         axes["annotations"] = annotation_artists
     if prepared_direct_labels:
-        axes["direct_labels"] = add_direct_labels(
+        direct_labels, direct_label_leaders = add_direct_labels(
             main_ax,
             spectrum_handles,
             prepared_direct_labels,
             settings,
         )
+        axes["direct_labels"] = direct_labels
+        axes["direct_label_leaders"] = direct_label_leaders
     return _complete_rendered_project(
         state, fig, axes, validate_layout=validate_layout
     )
@@ -255,12 +261,13 @@ def _render_refinement(state: ProjectState, fig: Any) -> tuple[Any, dict[str, An
 
     observed = display_main(observed_raw)
     calculated = display_main(calculated_raw)
+    observed_marker_size = max(2.0, settings.line_width * 2.8)
     observed_handle = main_ax.plot(
         x_clean,
         observed,
         linestyle="None",
         marker="o",
-        markersize=max(2.0, settings.line_width * 2.8),
+        markersize=observed_marker_size,
         markerfacecolor="none",
         markeredgecolor=PLOT_TEXT_COLOR,
         markeredgewidth=0.55,
@@ -431,22 +438,37 @@ def _render_refinement(state: ProjectState, fig: Any) -> tuple[Any, dict[str, An
             left_labels=[text.get_text() for text in phase_row_labels],
             left_decoration_points=phase_label_offset_points(settings),
             right_labels=right_labels,
-            right_decoration_points=(
-                32.0 if settings.legend_location == "outside right" else 8.0
+            right_decoration_points=max(
+                32.0 if settings.legend_location == "outside right" else 8.0,
+                direct_label_decoration_points(settings)
+                if prepared_direct_labels
+                else 0.0,
             ),
         ),
         hspace=0.05,
     )
+    observed_marker_indices = _refinement_marker_indices(
+        x_clean,
+        main_ax,
+        marker_size_points=observed_marker_size,
+    )
+    observed_handle.set_data(
+        [x_clean[index] for index in observed_marker_indices],
+        [observed[index] for index in observed_marker_indices],
+    )
+    axes["observed_marker_indices"] = observed_marker_indices
     annotation_artists = draw_annotations(main_ax, state)
     if annotation_artists:
         axes["annotations"] = annotation_artists
     if prepared_direct_labels:
-        axes["direct_labels"] = add_direct_labels(
+        direct_labels, direct_label_leaders = add_direct_labels(
             main_ax,
             handles,
             prepared_direct_labels,
             settings,
         )
+        axes["direct_labels"] = direct_labels
+        axes["direct_label_leaders"] = direct_label_leaders
     return fig, axes
 
 
@@ -461,6 +483,64 @@ def _fit_x_range(x_values: list[float], settings: Any) -> tuple[tuple[float, flo
     minimum = float(settings.x_min) if settings.x_min is not None else min(x_values)
     maximum = float(settings.x_max) if settings.x_max is not None else max(x_values)
     return (minimum, maximum), settings.x_min is not None or settings.x_max is not None
+
+
+def _refinement_marker_indices(
+    x_values: list[float],
+    ax: Any,
+    *,
+    marker_size_points: float,
+) -> list[int]:
+    """Thin display-only fit symbols to their final physical pixel density.
+
+    Calculated and residual curves, metrics, and exported source data continue
+    to use every point.  Only overlapping observed markers are reduced.
+    """
+
+    point_count = len(x_values)
+    if point_count < 1:
+        return []
+    if point_count == 1:
+        return [0]
+    # Leave a visible white gap between adjacent open circles at final size.
+    # A tighter pitch still produces a dark bead-like baseline even though the
+    # markers no longer overlap mathematically.
+    marker_pitch_points = max(float(marker_size_points) * 1.8, 4.0)
+    marker_pitch_pixels = (
+        marker_pitch_points * max(float(ax.figure.dpi), 1.0) / 72.0
+    )
+    display_x = ax.transData.transform(
+        np.column_stack((np.asarray(x_values, dtype=float), np.zeros(point_count)))
+    )[:, 0]
+    axes_box = ax.get_window_extent()
+    visible_indices = [
+        index
+        for index, x_pixel in enumerate(display_x)
+        if axes_box.x0 - 1.0e-9 <= x_pixel <= axes_box.x1 + 1.0e-9
+    ]
+    if not visible_indices:
+        return [0, point_count - 1]
+
+    sampled = [visible_indices[0]]
+    for index in visible_indices[1:-1]:
+        if (
+            abs(float(display_x[index] - display_x[sampled[-1]]))
+            >= marker_pitch_pixels
+        ):
+            sampled.append(index)
+
+    last_visible = visible_indices[-1]
+    if sampled[-1] != last_visible:
+        if (
+            len(sampled) > 1
+            and abs(float(display_x[last_visible] - display_x[sampled[-1]]))
+            < marker_pitch_pixels
+        ):
+            sampled[-1] = last_visible
+        else:
+            sampled.append(last_visible)
+
+    return sorted({0, point_count - 1, *sampled})
 
 
 def _polish_residual_axis(ax: Any, settings: Any) -> None:
@@ -942,28 +1022,40 @@ def settings_bragg_fraction(state: ProjectState) -> float:
     settings = state.settings
     phase_count = sum(1 for phase in state.phases if phase.visible and phase.peaks)
     configured = min(max(settings.bragg_band_height, 0.05), 0.45)
-    if phase_count < 2:
+    if phase_count == 0:
         return configured
 
+    margins = safe_subplot_margins(
+        settings,
+        title=prepare_panel_title(settings.panel_title, settings),
+    )
     available_height_points = (
         float(settings.figure_height_in)
         * 72.0
-        * max(float(settings.margin_top) - float(settings.margin_bottom), 0.32)
+        * max(float(margins["top"]) - float(margins["bottom"]), 0.32)
     )
+    row_height_points = max(float(settings.tick_label_size) * 1.5, 8.0)
+    y_tick_clearance = 0.0
+    if settings.show_y_tick_labels:
+        y_tick_clearance = float(settings.tick_label_size) * 1.2
     required_band_share = (
-        phase_count
-        * max(float(settings.tick_label_size) * 1.35, 6.5)
-        / max(available_height_points, 1.0)
+        phase_count * row_height_points + y_tick_clearance
+    ) / max(
+        available_height_points, 1.0
     )
     if required_band_share >= 1.0:
         required = math.inf
     else:
-        required = required_band_share * 1.04 / max(1.0 - required_band_share, 1.0e-9)
+        required = required_band_share * 1.08 / max(
+            1.0 - required_band_share, 1.0e-9
+        )
     if required > 0.45:
         raise ValueError(
             "Phase rows do not fit without overlap at the selected figure height; "
             "show fewer phases or use a taller canvas."
         )
+    if settings.show_y_tick_labels and phase_count == 1:
+        configured = max(configured, 0.20)
     return max(configured, required)
 
 

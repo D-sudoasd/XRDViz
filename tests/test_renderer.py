@@ -12,6 +12,25 @@ from xrdviz.models import PhaseLayer, PhasePeak, PlotSettings, ProjectState, Spe
 
 @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is not installed")
 class RendererTests(unittest.TestCase):
+    def test_renderer_uses_one_sans_serif_family_for_text_and_math(self):
+        import matplotlib as mpl
+
+        from xrdviz.models import PlotSettings, ProjectState, SpectrumLayer
+        from xrdviz.plot.renderer import render_project
+
+        state = ProjectState(
+            spectra=[SpectrumLayer(name="sample", x=[20.0, 30.0], y=[1.0, 2.0])],
+            settings=PlotSettings(font_family="Arial"),
+        )
+
+        figure, _axes = render_project(state)
+        self.addCleanup(figure.clear)
+
+        self.assertEqual(mpl.rcParams["mathtext.fontset"], "custom")
+        self.assertEqual(mpl.rcParams["mathtext.rm"], "Arial")
+        self.assertEqual(mpl.rcParams["mathtext.it"], "Arial:italic")
+        self.assertEqual(mpl.rcParams["mathtext.bf"], "Arial:bold")
+
     def test_renderer_exports_non_empty_png(self):
         from xrdviz.plot.renderer import export_project
 

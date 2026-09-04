@@ -60,6 +60,7 @@ def complete_rendered_project(
 ) -> tuple[Any, dict[str, Any]]:
     collision_groups: dict[str, list[Any]] = {}
     contained_artists: list[tuple[Any, Any, str]] = []
+    leader_groups: dict[str, tuple[list[Any], list[Any]]] = {}
     main_ax = axes.get("main")
 
     annotation_texts = [
@@ -81,6 +82,17 @@ def complete_rendered_project(
         artists = list(axes.get(key, []))
         if artists:
             collision_groups[label] = artists
+    direct_labels = list(axes.get("direct_labels", []))
+    direct_label_leaders = list(axes.get("direct_label_leaders", []))
+    if direct_labels or direct_label_leaders:
+        if len(direct_labels) != len(direct_label_leaders):
+            raise ValueError(
+                "Direct-label text and leader counts must match before layout validation"
+            )
+        leader_groups["direct curve-label leaders"] = (
+            direct_label_leaders,
+            direct_labels,
+        )
     phase_row_labels = list(axes.get("phase_row_labels", []))
     phase_peak_labels = list(axes.get("phase_peak_labels", []))
     if main_ax is not None:
@@ -116,10 +128,19 @@ def complete_rendered_project(
             *phase_peak_labels,
         )
         if artist is not None
-        and (not hasattr(artist, "axes") or artist.axes is main_ax)
+        and (
+            artist is inset
+            or not hasattr(artist, "axes")
+            or artist.axes is main_ax
+        )
     ]
     if len(main_decorations) > 1:
         collision_groups["main-panel decorations"] = main_decorations
+    if direct_label_leaders and main_decorations:
+        leader_groups["direct-label leaders and main-panel decorations"] = (
+            direct_label_leaders,
+            main_decorations,
+        )
     bragg_band_guard = axes.get("bragg_band_guard")
     if legend is not None and bragg_band_guard is not None:
         collision_groups["legend and Bragg phase band"] = [
@@ -151,12 +172,17 @@ def complete_rendered_project(
             fig,
             collision_groups=collision_groups,
             contained_artists=contained_artists,
+            leader_groups=leader_groups,
         )
-    axes["text_alternative"] = rendered_view_text_alternative(state)
+    axes["text_alternative"] = rendered_view_text_alternative(state, axes=axes)
     return fig, axes
 
 
-def rendered_view_text_alternative(state: ProjectState) -> str:
+def rendered_view_text_alternative(
+    state: ProjectState,
+    *,
+    axes: dict[str, Any] | None = None,
+) -> str:
     """Return a concise, attachable text alternative for the active view."""
 
     settings = state.settings
@@ -189,10 +215,17 @@ def rendered_view_text_alternative(state: ProjectState) -> str:
         if state.fit.rwp is not None:
             metrics.append(f"Rwp={state.fit.rwp:.4g} percent")
         metric_text = f" Metrics: {', '.join(metrics)}." if metrics else ""
+        marker_count = len((axes or {}).get("observed_marker_indices", ()))
+        marker_text = ""
+        if marker_count and marker_count < len(state.fit.x):
+            marker_text = (
+                f" Observed display markers: {marker_count} of {len(state.fit.x)}; "
+                "calculated/residual curves and exported data retain all points."
+            )
         return (
             f"Refinement view with {len(state.fit.x)} observed and calculated points; "
             f"observed range {_accessible_range(observed)}, residual range "
-            f"{_accessible_range(residual)}.{metric_text}"
+            f"{_accessible_range(residual)}.{metric_text}{marker_text}"
         )
     if mode == "small_multiples":
         visible = sum(1 for layer in state.spectra if layer.visible)

@@ -113,6 +113,10 @@ def apply_matplotlib_style(settings: PlotSettings) -> None:
         {
             "font.family": "sans-serif",
             "font.sans-serif": [settings.font_family, "Arial", "Helvetica", "DejaVu Sans"],
+            "mathtext.fontset": "custom",
+            "mathtext.rm": settings.font_family,
+            "mathtext.it": f"{settings.font_family}:italic",
+            "mathtext.bf": f"{settings.font_family}:bold",
             "font.size": settings.font_size,
             "axes.labelsize": settings.axis_label_size,
             "axes.edgecolor": PLOT_AXIS_COLOR,

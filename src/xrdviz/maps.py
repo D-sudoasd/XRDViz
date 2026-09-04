@@ -636,7 +636,11 @@ class MapData:
             # exporters mask those cells rather than treating zero as data.
             intensity = np.where(populated, intensity_array, 0.0)
 
-        resolved_labels = {"x": "2θ", "y": "χ", "intensity": "Intensity"}
+        resolved_labels = {
+            "x": r"$2\theta$",
+            "y": r"$\chi$",
+            "intensity": "Intensity",
+        }
         resolved_labels.update(_metadata_items(labels, "labels"))
         resolved_units = {"x": "deg", "y": "deg", "intensity": ""}
         resolved_units.update(_metadata_items(units, "units"))

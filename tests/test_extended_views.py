@@ -320,7 +320,7 @@ class ExtendedRendererTests(unittest.TestCase):
         self.assertIn("scatter", axes)
         self.assertIn("fit_line", axes)
         self.assertTrue(
-            any("r squared" in text.get_text() for text in axes["main"].texts)
+            any("$R^2$" in text.get_text() for text in axes["main"].texts)
         )
         self.assertNotIn(
             "at least one visible spectrum line with data is required",
@@ -362,7 +362,7 @@ class ExtendedRendererTests(unittest.TestCase):
         canvas = FigureCanvasAgg(figure)
         canvas.draw()
         metric_text = next(
-            text for text in axes["main"].texts if "r squared" in text.get_text()
+            text for text in axes["main"].texts if "$R^2$" in text.get_text()
         )
 
         self.assertEqual(metric_text.get_position(), (0.03, 0.96))
@@ -371,6 +371,33 @@ class ExtendedRendererTests(unittest.TestCase):
         self.assertAlmostEqual(metric_text.get_bbox_patch().get_facecolor()[0], 1.0)
         self.assertLessEqual(len(axes["main"].get_xticks()), 6)
         self.assertLessEqual(len(axes["main"].get_yticks()), 6)
+
+    def test_derived_metrics_use_publication_symbols_and_attach_units(self) -> None:
+        state = ProjectState(
+            derived_plot=DerivedPlot(
+                kind="williamson_hall",
+                x=[0.1, 0.2, 0.3],
+                y=[0.01, 0.02, 0.03],
+                metrics={
+                    "microstrain": 0.0012,
+                    "crystallite_size": 82.4,
+                    "size_unit": "nm",
+                    "r_squared": 0.999,
+                    "n_points": 3,
+                },
+            ),
+            settings=PlotSettings(view_mode="derived"),
+        )
+
+        figure, axes = render_project(state)
+        self.addCleanup(figure.clear)
+        metric_text = axes["metrics"].get_text()
+
+        self.assertIn(r"$\varepsilon$", metric_text)
+        self.assertIn("Crystallite size: 82.4 nm", metric_text)
+        self.assertIn(r"$R^2$", metric_text)
+        self.assertIn(r"$n$", metric_text)
+        self.assertNotIn("size unit", metric_text.casefold())
 
     def test_small_multiples_inset_and_annotations_are_explicit_axes(self) -> None:
         spectra = [
@@ -381,13 +408,19 @@ class ExtendedRendererTests(unittest.TestCase):
             spectra=spectra,
             annotations=[PlotAnnotation(x=21.0, text="peak")],
             settings=PlotSettings(
-                view_mode="small_multiples", small_multiples_columns=2
+                view_mode="small_multiples",
+                small_multiples_columns=2,
+                axis_label_size=9.0,
             ),
         )
         figure, axes = render_project(small_state)
         self.addCleanup(figure.clear)
         self.assertEqual(len(axes["panels"]), 2)
         self.assertEqual(len(axes["annotations"]), 2)
+        panel_label = axes["panel_headers"][0][1]
+        self.assertEqual(panel_label.get_text(), "a")
+        self.assertEqual(panel_label.get_fontsize(), 8.0)
+        self.assertEqual(panel_label.get_fontweight(), "bold")
 
         inset_state = ProjectState(
             spectra=spectra,

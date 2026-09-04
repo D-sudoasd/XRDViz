@@ -674,7 +674,7 @@ def build_scherrer_plot(
         y=sizes,
         scatter=scatter,
         labels={
-            "x": f"2θ ({stored_angle_unit})",
+            "x": rf"$2\theta$ ({stored_angle_unit})",
             "y": f"Crystallite size ({size_unit})",
             "title": "Scherrer crystallite size",
         },
@@ -767,8 +767,8 @@ def build_williamson_hall_plot(
         scatter=list(zip(transformed_x, transformed_y)),
         fit_line=fit_line,
         labels={
-            "x": "4 sin(theta)",
-            "y": "beta cos(theta) (rad)",
+            "x": r"$4\sin(\theta)$",
+            "y": r"$\beta\cos(\theta)$ (rad)",
             "title": "Williamson-Hall analysis",
         },
         metrics={
@@ -860,7 +860,7 @@ def build_rocking_curve_plot(
         y=ys,
         scatter=scatter,
         labels={
-            "x": f"omega ({canonical_unit})",
+            "x": rf"$\omega$ ({canonical_unit})",
             "y": "Intensity (a.u.)",
             "title": "Rocking curve",
         },
