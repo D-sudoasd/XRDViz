@@ -252,7 +252,7 @@ class PlotSettings:
     show_colorbar: bool = False
     show_every_n: int = 1
     heatmap_points: int = 600
-    legend_location: str = "upper right"
+    legend_location: str = "best"
     template_name: str = "nature_single"
     margin_left: float = 0.16
     margin_right: float = 0.98

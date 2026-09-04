@@ -12,6 +12,13 @@ from xrdviz.models import (
     ProjectState,
     default_axis_label,
 )
+from xrdviz.plot.layout import (
+    prepare_panel_title,
+    reserve_axes_top,
+    safe_subplot_margins,
+    stagger_rotated_label_tops,
+    wrap_text,
+)
 from xrdviz.transforms import display_y_for_layer
 
 
@@ -36,8 +43,22 @@ def layer_energy_kev(layer: Any, fallback_energy_kev: float) -> float:
 
 
 def draw_annotations(ax: Any, state: ProjectState) -> list[Any]:
+    x_min, x_max = sorted(float(value) for value in ax.get_xlim())
+    visible = [
+        annotation
+        for annotation in state.annotations
+        if x_min <= float(annotation.x) <= x_max
+    ]
+    label_x_values, tops, header_fraction = stagger_rotated_label_tops(
+        ax,
+        x_values=[annotation.x for annotation in visible],
+        labels=[annotation.text for annotation in visible],
+        desired_tops=[annotation.y_fraction for annotation in visible],
+        settings=state.settings,
+    )
+    reserve_axes_top(ax, header_fraction)
     artists: list[Any] = []
-    for annotation in state.annotations:
+    for annotation, label_x, top in zip(visible, label_x_values, tops):
         line = None
         if annotation.show_line:
             line = ax.axvline(
@@ -48,17 +69,32 @@ def draw_annotations(ax: Any, state: ProjectState) -> list[Any]:
                 alpha=0.75,
                 zorder=1,
             )
-        text_artist = ax.text(
-            annotation.x,
-            annotation.y_fraction,
+        shifted = not math.isclose(float(label_x), float(annotation.x), rel_tol=0.0, abs_tol=1e-12)
+        text_artist = ax.annotate(
             annotation.text,
-            transform=ax.get_xaxis_transform(),
+            xy=(annotation.x, top - 0.012),
+            xycoords=ax.get_xaxis_transform(),
+            xytext=(label_x, top),
+            textcoords=ax.get_xaxis_transform(),
             ha="center",
             va="top",
             rotation=90,
             fontsize=state.settings.tick_label_size,
             color=annotation.color,
+            arrowprops=(
+                {
+                    "arrowstyle": "-",
+                    "color": annotation.color,
+                    "linewidth": max(0.4, state.settings.line_width * 0.55),
+                    "alpha": 0.75,
+                    "shrinkA": 1.5,
+                    "shrinkB": 1.5,
+                }
+                if shifted
+                else None
+            ),
             clip_on=True,
+            zorder=5,
         )
         artists.append((line, text_artist))
     return artists
@@ -116,8 +152,18 @@ def render_small_multiples(state: ProjectState, fig: Any) -> tuple[Any, dict[str
     rows = int(math.ceil(len(layers) / columns))
     panel_grid = fig.subplots(rows, columns, squeeze=False, sharex=True)
     panels = [panel_grid.flat[index] for index in range(len(layers))]
-    annotation_artists: list[Any] = []
+    panel_headers: list[list[Any]] = []
     x_range, exact = _display_x_range(state)
+    margins = safe_subplot_margins(
+        settings,
+        title=prepare_panel_title(settings.panel_title, settings),
+    )
+    panel_width_points = (
+        float(settings.figure_width_in)
+        * 72.0
+        * max(margins["right"] - margins["left"], 0.1)
+        / max(columns, 1)
+    )
     for index, (ax, layer) in enumerate(zip(panels, layers)):
         x_values = convert_x(
             layer.x,
@@ -134,30 +180,43 @@ def render_small_multiples(state: ProjectState, fig: Any) -> tuple[Any, dict[str
         if finite_points:
             x_clean, y_clean = zip(*finite_points)
             ax.plot(x_clean, y_clean, color=layer.color, linewidth=layer.linewidth)
-        ax.text(
+        wrapped_name = wrap_text(
+            layer.name,
+            settings,
+            max_width_points=max(32.0, panel_width_points * 0.64),
+            font_size=settings.tick_label_size,
+        )
+        reserve_axes_top(
+            ax,
+            min(0.14 + max(len(wrapped_name.splitlines()) - 1, 0) * 0.08, 0.38),
+        )
+        name_artist = ax.text(
             0.98,
             0.94,
-            layer.name,
+            wrapped_name,
             transform=ax.transAxes,
             ha="right",
             va="top",
             fontsize=settings.tick_label_size,
             color=PLOT_TEXT_COLOR,
         )
+        header_artists = [name_artist]
         if settings.show_panel_labels:
-            ax.text(
-                0.02,
-                0.96,
-                f"({chr(97 + index)})" if index < 26 else f"({index + 1})",
-                transform=ax.transAxes,
-                ha="left",
-                va="top",
-                fontsize=settings.axis_label_size,
-                fontweight="bold",
-                color=PLOT_TEXT_COLOR,
+            header_artists.append(
+                ax.text(
+                    0.02,
+                    0.96,
+                    f"({chr(97 + index)})" if index < 26 else f"({index + 1})",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=settings.axis_label_size,
+                    fontweight="bold",
+                    color=PLOT_TEXT_COLOR,
+                )
             )
+        panel_headers.append(header_artists)
         _apply_x_range(ax, x_range, exact=exact)
-        annotation_artists.extend(draw_annotations(ax, state))
         _polish_panel(ax, settings)
         ax.tick_params(axis="y", left=True, labelleft=index % columns == 0)
         if index // columns == rows - 1:
@@ -167,14 +226,33 @@ def render_small_multiples(state: ProjectState, fig: Any) -> tuple[Any, dict[str
     for index in range(len(layers), rows * columns):
         panel_grid.flat[index].set_visible(False)
     fig.subplots_adjust(
-        left=settings.margin_left,
-        right=settings.margin_right,
-        top=settings.margin_top,
-        bottom=settings.margin_bottom,
+        **margins,
         hspace=0.12,
         wspace=0.12,
     )
-    axes = {"main": panels[0], "panels": panels}
+    title_artist = None
+    wrapped_title = prepare_panel_title(settings.panel_title, settings)
+    if wrapped_title:
+        title_artist = fig.suptitle(
+            wrapped_title,
+            x=margins["left"],
+            y=0.99,
+            ha="left",
+            va="top",
+            fontsize=max(settings.axis_label_size, settings.font_size),
+            fontweight="bold",
+            color=PLOT_TEXT_COLOR,
+        )
+    annotation_artists: list[Any] = []
+    for ax in panels:
+        annotation_artists.extend(draw_annotations(ax, state))
+    axes = {
+        "main": panels[0],
+        "panels": panels,
+        "panel_headers": panel_headers,
+    }
+    if title_artist is not None:
+        axes["panel_title"] = title_artist
     if annotation_artists:
         axes["annotations"] = annotation_artists
     return fig, axes

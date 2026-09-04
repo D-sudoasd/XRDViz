@@ -6,6 +6,13 @@ from typing import Any
 from matplotlib.ticker import MaxNLocator
 
 from xrdviz.models import PLOT_AXIS_COLOR, PLOT_TEXT_COLOR, ProjectState
+from xrdviz.plot.layout import (
+    prepare_metric_lines,
+    prepare_panel_title,
+    reserve_axes_top,
+    safe_subplot_margins,
+    set_panel_title,
+)
 from xrdviz.plot.spectrum_extras import draw_annotations
 
 
@@ -62,14 +69,23 @@ def render_derived(state: ProjectState, fig: Any) -> tuple[Any, dict[str, Any]]:
             settings.x_min if settings.x_min is not None else current[0],
             settings.x_max if settings.x_max is not None else current[1],
         )
+    metric_artist = None
     if data.metrics:
-        ax.text(
-            0.03,
-            0.84 if settings.panel_title else 0.96,
-            "\n".join(
+        metric_text = prepare_metric_lines(
+            (
                 f"{_metric_label(key)}: {_format_metric(value)}"
                 for key, value in data.metrics.items()
             ),
+            settings,
+        )
+        reserve_axes_top(
+            ax,
+            min(0.12 + max(len(metric_text.splitlines()) - 1, 0) * 0.055, 0.45),
+        )
+        metric_artist = ax.text(
+            0.03,
+            0.96,
+            metric_text,
             transform=ax.transAxes,
             ha="left",
             va="top",
@@ -78,28 +94,20 @@ def render_derived(state: ProjectState, fig: Any) -> tuple[Any, dict[str, Any]]:
             bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
             zorder=5,
         )
-    if settings.panel_title:
-        ax.text(
-            0.03,
-            0.95,
-            settings.panel_title,
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=max(settings.axis_label_size, settings.font_size),
-            fontweight="bold",
-            color=PLOT_TEXT_COLOR,
-        )
+        axes["metrics"] = metric_artist
+    title_artist = set_panel_title(ax, settings.panel_title, settings)
+    if title_artist is not None:
+        axes["panel_title"] = title_artist
+    _polish_axis(ax, settings)
+    fig.subplots_adjust(
+        **safe_subplot_margins(
+            settings,
+            title=prepare_panel_title(settings.panel_title, settings),
+        ),
+    )
     annotation_artists = draw_annotations(ax, state)
     if annotation_artists:
         axes["annotations"] = annotation_artists
-    _polish_axis(ax, settings)
-    fig.subplots_adjust(
-        left=settings.margin_left,
-        right=settings.margin_right,
-        top=settings.margin_top,
-        bottom=settings.margin_bottom,
-    )
     return fig, axes
 
 

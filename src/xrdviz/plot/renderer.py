@@ -21,6 +21,20 @@ from xrdviz.batch import (
 from xrdviz.cif import phase_peak_position_for_axis
 from xrdviz.models import PLOT_AXIS_COLOR, PLOT_MUTED_COLOR, PLOT_TEXT_COLOR, ProjectState, default_axis_label
 from xrdviz.plot.derived_renderer import render_derived
+from xrdviz.plot.finalize import (
+    complete_rendered_project as _complete_rendered_project,
+    configure_figure as _configure_figure,
+)
+from xrdviz.plot.layout import (
+    add_direct_labels,
+    phase_label_offset_points,
+    prepare_panel_title,
+    prepare_side_labels,
+    reserve_axes_top,
+    safe_subplot_margins,
+    set_panel_title,
+    side_label_height_points,
+)
 from xrdviz.plot.map_renderer import render_map
 from xrdviz.plot.spectrum_extras import (
     draw_annotations,
@@ -49,15 +63,31 @@ def render_project(
     Figure = _figure_class()
     if figure is None:
         fig = Figure()
-        return _render_project_inplace(state, fig, preview_size=preview_size)
+        return _render_project_inplace(
+            state,
+            fig,
+            preview_size=preview_size,
+            validate_layout=True,
+        )
 
     # Render into an isolated figure first.  A malformed import or an
     # unavailable view must not clear the live canvas; only a complete render
-    # is committed to the caller's Figure below.
+    # is committed to the caller's Figure below.  Re-rendering into the live
+    # Figure keeps every Axes, transform, and child artist owned by that Figure;
+    # Matplotlib does not support safely transplanting a populated Axes.
     staged = Figure()
-    rendered, axes = _render_project_inplace(state, staged, preview_size=preview_size)
-    _adopt_figure_contents(rendered, figure)
-    return figure, axes
+    _render_project_inplace(
+        state,
+        staged,
+        preview_size=preview_size,
+        validate_layout=True,
+    )
+    return _render_project_inplace(
+        state,
+        figure,
+        preview_size=preview_size,
+        validate_layout=False,
+    )
 
 
 def _render_project_inplace(
@@ -65,6 +95,7 @@ def _render_project_inplace(
     fig: Any,
     *,
     preview_size: tuple[int, int] | None,
+    validate_layout: bool,
 ) -> tuple[Any, dict[str, Any]]:
     settings = state.settings
     apply_matplotlib_style(settings)
@@ -75,20 +106,24 @@ def _render_project_inplace(
 
     if settings.view_mode == "map":
         rendered_fig, axes = render_map(state, fig)
-        axes["text_alternative"] = rendered_view_text_alternative(state)
-        return rendered_fig, axes
+        return _complete_rendered_project(
+            state, rendered_fig, axes, validate_layout=validate_layout
+        )
     if settings.view_mode == "derived":
         rendered_fig, axes = render_derived(state, fig)
-        axes["text_alternative"] = rendered_view_text_alternative(state)
-        return rendered_fig, axes
+        return _complete_rendered_project(
+            state, rendered_fig, axes, validate_layout=validate_layout
+        )
     if settings.view_mode == "small_multiples":
         rendered_fig, axes = render_small_multiples(state, fig)
-        axes["text_alternative"] = rendered_view_text_alternative(state)
-        return rendered_fig, axes
+        return _complete_rendered_project(
+            state, rendered_fig, axes, validate_layout=validate_layout
+        )
     if settings.view_mode == "refinement":
         rendered_fig, axes = _render_refinement(state, fig)
-        axes["text_alternative"] = rendered_view_text_alternative(state)
-        return rendered_fig, axes
+        return _complete_rendered_project(
+            state, rendered_fig, axes, validate_layout=validate_layout
+        )
 
     main_ax = fig.add_subplot(111)
     main_ax.set_facecolor("white")
@@ -109,15 +144,23 @@ def _render_project_inplace(
             axes["colorbar"] = colorbar_ax
         x_range, exact_x_range = _display_x_range(state)
         _apply_x_range(main_ax, x_range, exact=exact_x_range)
-        phase_handles = _draw_bragg_band(main_ax, state)
+        (
+            phase_handles,
+            phase_row_labels,
+            phase_peak_labels,
+            bragg_band_guard,
+        ) = _draw_bragg_band(main_ax, state)
+        if phase_row_labels:
+            axes["phase_row_labels"] = phase_row_labels
+        if phase_peak_labels:
+            axes["phase_peak_labels"] = phase_peak_labels
+        if bragg_band_guard is not None:
+            axes["bragg_band_guard"] = bragg_band_guard
         _apply_x_range(main_ax, x_range, exact=exact_x_range)
 
     x_range, exact_x_range = _display_x_range(state)
     _apply_x_range(main_ax, x_range, exact=exact_x_range)
 
-    annotation_artists = draw_annotations(main_ax, state)
-    if annotation_artists:
-        axes["annotations"] = annotation_artists
     if settings.inset_enabled and settings.inset_x_min is not None and settings.inset_x_max is not None:
         axes["inset"] = draw_inset(main_ax, state)
 
@@ -128,157 +171,48 @@ def _render_project_inplace(
         if settings.view_mode == "heatmap"
         else settings.y_label
     )
-    if settings.panel_title:
-        main_ax.text(
-            0.03,
-            0.95,
-            settings.panel_title,
-            transform=main_ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=max(settings.axis_label_size, settings.font_size),
-            fontweight="bold",
-            color=PLOT_TEXT_COLOR,
-        )
+    title_artist = set_panel_title(main_ax, settings.panel_title, settings)
+    if title_artist is not None:
+        axes["panel_title"] = title_artist
     _polish_main_axis(main_ax, state, spectrum_handles, phase_handles)
-    fig.subplots_adjust(
-        left=settings.margin_left,
-        right=_layout_right_margin(settings, legend=main_ax.get_legend()),
-        top=settings.margin_top,
-        bottom=settings.margin_bottom,
-    )
-    axes["text_alternative"] = rendered_view_text_alternative(state)
-    return fig, axes
-
-
-def _configure_figure(
-    fig: Any,
-    settings: Any,
-    *,
-    preview_size: tuple[int, int] | None,
-) -> None:
-    if preview_size is None:
-        # Keep publication-facing callers and export contracts tied to the
-        # exact physical canvas requested by the project.
-        fig.set_size_inches(settings.figure_width_in, settings.figure_height_in, forward=True)
-        fig.set_dpi(settings.dpi)
-        return
-    preview_width, preview_height = (int(value) for value in preview_size)
-    if preview_width < 1 or preview_height < 1:
-        raise ValueError("preview_size must contain positive pixel dimensions")
-    # Fit the requested screen box while preserving the publication aspect;
-    # the Qt wrapper centers this smaller figure in the available canvas.
-    aspect = float(settings.figure_width_in) / float(settings.figure_height_in)
-    if not math.isfinite(aspect) or aspect <= 0.0:
-        raise ValueError("Figure dimensions must be finite and positive")
-    if preview_width / preview_height > aspect:
-        fitted_width = max(1, int(round(preview_height * aspect)))
-        fitted_height = preview_height
-    else:
-        fitted_width = preview_width
-        fitted_height = max(1, int(round(preview_width / aspect)))
-    preview_dpi = 100.0
-    fig.set_dpi(preview_dpi)
-    fig.set_size_inches(fitted_width / preview_dpi, fitted_height / preview_dpi, forward=True)
-
-
-def _adopt_figure_contents(source: Any, target: Any) -> None:
-    """Commit a successfully rendered staged figure into a live Figure.
-
-    Matplotlib axes can be detached and re-attached to another Figure.  This
-    keeps the FigureCanvas and toolbar identity stable while ensuring a failed
-    staged render never mutates the visible figure.
-    """
-
-    source_axes = list(source.axes)
-    subplotpars = source.subplotpars
-    target.clear()
-    target.set_dpi(source.dpi)
-    target.set_size_inches(source.get_size_inches(), forward=True)
-    target.patch.set_facecolor(source.patch.get_facecolor())
-    target.patch.set_alpha(source.patch.get_alpha())
-    target.subplots_adjust(
-        left=subplotpars.left,
-        right=subplotpars.right,
-        bottom=subplotpars.bottom,
-        top=subplotpars.top,
-        wspace=subplotpars.wspace,
-        hspace=subplotpars.hspace,
-    )
-    for axis in source_axes:
-        axis.remove()
-        axis.set_figure(target)
-        target.add_axes(axis)
-
-
-def rendered_view_text_alternative(state: ProjectState) -> str:
-    """Return a concise, attachable text alternative for the active view."""
-
-    settings = state.settings
-    mode = settings.view_mode
-    if mode == "map" and state.map_data is not None:
-        data = state.map_data
-        intensity = np.asarray(data.intensity, dtype=float)
-        populated = np.isfinite(intensity)
-        if data.counts is not None:
-            populated &= np.asarray(data.counts, dtype=float) > 0.0
-        intensity_range = _accessible_range(intensity, populated)
-        return (
-            f"Map view ({data.kind}) with {len(data.y)} rows and {len(data.x)} columns; "
-            f"horizontal axis {data.x_label}, vertical axis {data.y_label}; "
-            f"populated {data.intensity_label} range {intensity_range}."
+    right_labels: list[str] = []
+    if settings.legend_location == "outside right" and main_ax.get_legend() is not None:
+        right_labels.extend(text.get_text() for text in main_ax.get_legend().get_texts())
+    prepared_direct_labels: list[str] = []
+    if settings.direct_labels:
+        prepared_direct_labels = prepare_side_labels(
+            [handle.get_label() for handle in spectrum_handles], settings
         )
-    if mode == "derived" and state.derived_plot is not None:
-        data = state.derived_plot
-        points = len(data.scatter) if data.scatter else len(data.x)
-        metrics = ", ".join(f"{key}={value}" for key, value in data.metrics.items())
-        suffix = f" Metrics: {metrics}." if metrics else ""
-        return f"Derived {data.kind} view with {points} data points.{suffix}"
-    if mode == "refinement" and state.fit is not None:
-        observed = np.asarray(state.fit.observed, dtype=float)
-        calculated = np.asarray(state.fit.calculated, dtype=float)
-        residual = observed - calculated
-        metrics = []
-        if state.fit.rp is not None:
-            metrics.append(f"Rp={state.fit.rp:.4g} percent")
-        if state.fit.rwp is not None:
-            metrics.append(f"Rwp={state.fit.rwp:.4g} percent")
-        metric_text = f" Metrics: {', '.join(metrics)}." if metrics else ""
-        return (
-            f"Refinement view with {len(state.fit.x)} observed and calculated points; "
-            f"observed range {_accessible_range(observed)}, residual range "
-            f"{_accessible_range(residual)}.{metric_text}"
-        )
-    if mode == "small_multiples":
-        visible = sum(1 for layer in state.spectra if layer.visible)
-        return f"Small-multiples view with {visible} visible spectrum panels."
-    visible = sum(1 for layer in state.spectra if layer.visible)
-    finite_x = [
-        float(value)
-        for layer in state.spectra
-        if layer.visible
-        for value in layer.x
-        if math.isfinite(float(value))
+        right_labels.extend(prepared_direct_labels)
+    left_labels = [
+        text.get_text() for text in axes.get("phase_row_labels", [])
     ]
-    x_range = _accessible_range(np.asarray(finite_x, dtype=float))
-    return (
-        f"Spectrum view ({mode}) with {visible} visible spectrum lines; "
-        f"source-coordinate range {x_range}."
+    fig.subplots_adjust(
+        **safe_subplot_margins(
+            settings,
+            title=prepare_panel_title(settings.panel_title, settings),
+            left_labels=left_labels,
+            left_decoration_points=phase_label_offset_points(settings),
+            right_labels=right_labels,
+            right_decoration_points=(
+                32.0 if settings.legend_location == "outside right" else 8.0
+            ),
+            colorbar=colorbar_ax is not None,
+        ),
     )
-
-
-def _accessible_range(values: np.ndarray, mask: np.ndarray | None = None) -> str:
-    """Format a finite numerical range without copying the selected values."""
-
-    array = np.asarray(values, dtype=float)
-    finite = np.isfinite(array)
-    if mask is not None:
-        finite &= np.asarray(mask, dtype=bool)
-    if not bool(np.any(finite)):
-        return "unavailable"
-    minimum = float(np.min(array, where=finite, initial=np.inf))
-    maximum = float(np.max(array, where=finite, initial=-np.inf))
-    return f"{minimum:.6g} to {maximum:.6g}"
+    annotation_artists = draw_annotations(main_ax, state)
+    if annotation_artists:
+        axes["annotations"] = annotation_artists
+    if prepared_direct_labels:
+        axes["direct_labels"] = add_direct_labels(
+            main_ax,
+            spectrum_handles,
+            prepared_direct_labels,
+            settings,
+        )
+    return _complete_rendered_project(
+        state, fig, axes, validate_layout=validate_layout
+    )
 
 
 def _render_refinement(state: ProjectState, fig: Any) -> tuple[Any, dict[str, Any]]:
@@ -438,11 +372,19 @@ def _render_refinement(state: ProjectState, fig: Any) -> tuple[Any, dict[str, An
     x_range, exact_x_range = _fit_x_range(x_clean, settings)
     _apply_x_range(main_ax, x_range, exact=exact_x_range)
 
-    annotation_artists = draw_annotations(main_ax, state)
-    if annotation_artists:
-        axes["annotations"] = annotation_artists
     _apply_x_range(residual_ax, x_range, exact=exact_x_range)
-    phase_handles = _draw_bragg_band(main_ax, state)
+    (
+        phase_handles,
+        phase_row_labels,
+        phase_peak_labels,
+        bragg_band_guard,
+    ) = _draw_bragg_band(main_ax, state)
+    if phase_row_labels:
+        axes["phase_row_labels"] = phase_row_labels
+    if phase_peak_labels:
+        axes["phase_peak_labels"] = phase_peak_labels
+    if bragg_band_guard is not None:
+        axes["bragg_band_guard"] = bragg_band_guard
     _apply_x_range(main_ax, x_range, exact=exact_x_range)
     _polish_main_axis(main_ax, state, handles, phase_handles)
     _polish_residual_axis(residual_ax, settings)
@@ -454,9 +396,13 @@ def _render_refinement(state: ProjectState, fig: Any) -> tuple[Any, dict[str, An
         if fit.rwp is not None and math.isfinite(fit.rwp):
             metric_lines.append(f"$R_{{wp}}$ = {fit.rwp:.3g}%")
         if metric_lines:
-            main_ax.text(
+            reserve_axes_top(
+                main_ax,
+                min(0.12 + max(len(metric_lines) - 1, 0) * 0.06, 0.3),
+            )
+            axes["metrics"] = main_ax.text(
                 0.03,
-                0.84 if settings.panel_title else 0.96,
+                0.96,
                 "\n".join(metric_lines),
                 transform=main_ax.transAxes,
                 ha="left",
@@ -466,25 +412,41 @@ def _render_refinement(state: ProjectState, fig: Any) -> tuple[Any, dict[str, An
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
             )
 
-    if settings.panel_title:
-        main_ax.text(
-            0.03,
-            0.95,
-            settings.panel_title,
-            transform=main_ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=max(settings.axis_label_size, settings.font_size),
-            fontweight="bold",
-            color=PLOT_TEXT_COLOR,
+    title_artist = set_panel_title(main_ax, settings.panel_title, settings)
+    if title_artist is not None:
+        axes["panel_title"] = title_artist
+    right_labels: list[str] = []
+    if settings.legend_location == "outside right" and main_ax.get_legend() is not None:
+        right_labels.extend(text.get_text() for text in main_ax.get_legend().get_texts())
+    prepared_direct_labels: list[str] = []
+    if settings.direct_labels:
+        prepared_direct_labels = prepare_side_labels(
+            [handle.get_label() for handle in handles], settings
         )
+        right_labels.extend(prepared_direct_labels)
     fig.subplots_adjust(
-        left=settings.margin_left,
-        right=_layout_right_margin(settings, legend=main_ax.get_legend()),
-        top=settings.margin_top,
-        bottom=settings.margin_bottom,
+        **safe_subplot_margins(
+            settings,
+            title=prepare_panel_title(settings.panel_title, settings),
+            left_labels=[text.get_text() for text in phase_row_labels],
+            left_decoration_points=phase_label_offset_points(settings),
+            right_labels=right_labels,
+            right_decoration_points=(
+                32.0 if settings.legend_location == "outside right" else 8.0
+            ),
+        ),
         hspace=0.05,
     )
+    annotation_artists = draw_annotations(main_ax, state)
+    if annotation_artists:
+        axes["annotations"] = annotation_artists
+    if prepared_direct_labels:
+        axes["direct_labels"] = add_direct_labels(
+            main_ax,
+            handles,
+            prepared_direct_labels,
+            settings,
+        )
     return fig, axes
 
 
@@ -643,16 +605,6 @@ def _draw_spectra(ax: Any, state: ProjectState, fig: Any) -> tuple[list[Any], An
                         label="_nolegend_",
                     )
                 )
-        if settings.direct_labels:
-            ax.text(
-                x_clean[-1],
-                y_clean[-1],
-                f"  {layer.name}",
-                va="center",
-                ha="left",
-                fontsize=settings.tick_label_size,
-                color=PLOT_TEXT_COLOR,
-            )
     colorbar_ax = None
     if settings.show_colorbar and settings.view_mode == "gradient_stack" and finite_values:
         colorbar_ax = _add_scalar_colorbar(
@@ -710,12 +662,16 @@ def _heatmap_tick_positions(row_count: int, *, max_ticks: int = 7) -> list[int]:
     return list(dict.fromkeys(positions))
 
 
-def _draw_bragg_band(ax: Any, state: ProjectState) -> list[Any]:
+def _draw_bragg_band(
+    ax: Any, state: ProjectState
+) -> tuple[list[Any], list[Any], list[Any], Any | None]:
     visible_phases = [phase for phase in state.phases if phase.visible and phase.peaks]
     if not visible_phases:
-        return []
+        return [], [], [], None
 
     phase_handles = []
+    row_labels = []
+    peak_labels = []
     x_min, x_max = ax.get_xlim()
     data_bottom, data_top = ax.get_ylim()
     data_span = data_top - data_bottom
@@ -728,22 +684,31 @@ def _draw_bragg_band(ax: Any, state: ProjectState) -> list[Any]:
     row_height = band_span / max(len(visible_phases), 1)
     band_bottom = data_bottom - band_span
     tick_linewidth = max(0.55, state.settings.line_width * 0.75)
+    from matplotlib.transforms import ScaledTranslation
+
+    row_label_transform = ax.get_yaxis_transform() + ScaledTranslation(
+        -phase_label_offset_points(state.settings) / 72.0,
+        0.0,
+        ax.figure.dpi_scale_trans,
+    )
 
     for index, phase in enumerate(visible_phases):
         baseline = band_bottom + row_height * index + row_height * 0.18
         tick_top = baseline + row_height * 0.62 * max(min(phase.tick_height, 1.0), 0.15)
         characteristic = _characteristic_peaks(phase.peaks)
-        ax.text(
-            -0.015,
-            baseline + row_height * 0.31,
-            phase.phase or phase.name,
-            transform=ax.get_yaxis_transform(),
-            ha="right",
-            va="center",
-            fontsize=state.settings.tick_label_size,
-            color=PLOT_TEXT_COLOR,
-            fontweight="normal",
-            clip_on=False,
+        row_labels.append(
+            ax.text(
+                0.0,
+                baseline + row_height * 0.31,
+                phase.phase or phase.name,
+                transform=row_label_transform,
+                ha="right",
+                va="center",
+                fontsize=state.settings.tick_label_size,
+                color=PLOT_TEXT_COLOR,
+                fontweight="normal",
+                clip_on=False,
+            )
         )
         for peak in phase.peaks:
             x_value = phase_peak_position_for_axis(phase, peak, state.settings.x_axis, state.settings.energy_kev)
@@ -765,16 +730,18 @@ def _draw_bragg_band(ax: Any, state: ProjectState) -> list[Any]:
                 )
             if peak in characteristic and phase.label_policy != "none":
                 label = peak.label or peak.hkl or phase.phase or phase.name
-                ax.text(
-                    x_value,
-                    tick_top + row_height * 0.08,
-                    label,
-                    rotation=90,
-                    ha="center",
-                    va="bottom",
-                    fontsize=state.settings.tick_label_size,
-                    color=PLOT_TEXT_COLOR,
-                    clip_on=True,
+                peak_labels.append(
+                    ax.text(
+                        x_value,
+                        tick_top + row_height * 0.08,
+                        label,
+                        rotation=90,
+                        ha="center",
+                        va="bottom",
+                        fontsize=state.settings.tick_label_size,
+                        color=PLOT_TEXT_COLOR,
+                        clip_on=True,
+                    )
                 )
             if phase.show_guides and peak in characteristic:
                 ax.axvline(x_value, color=phase.color, linestyle="--", linewidth=0.55, alpha=0.36, zorder=1)
@@ -782,8 +749,36 @@ def _draw_bragg_band(ax: Any, state: ProjectState) -> list[Any]:
             phase_handles.append(_phase_legend_handle(phase.color, phase.phase or phase.name, phase.marker_shape))
 
     ax.axhline(data_bottom, color=PLOT_MUTED_COLOR, linewidth=0.45, alpha=0.55, zorder=1)
-    ax.set_ylim(band_bottom - row_height * 0.08, data_top + data_span * 0.04)
-    return phase_handles
+    band_floor = band_bottom - row_height * 0.08
+    ax.set_ylim(band_floor, data_top + data_span * 0.04)
+    if state.settings.show_y_tick_labels:
+        # The Bragg lane is categorical, not part of the intensity scale.
+        # Removing intensity ticks below the data baseline prevents semantic
+        # ambiguity and lets phase names sit compactly beside their rows.
+        data_ticks = [
+            float(value)
+            for value in ax.get_yticks()
+            if data_bottom - 1.0e-12 <= float(value) <= ax.get_ylim()[1] + 1.0e-12
+        ]
+        if data_ticks:
+            ax.set_yticks(data_ticks)
+
+    # Invisible geometry guard used by the final layout validator.  It spans
+    # the complete Bragg phase lane so legends/insets cannot silently obscure
+    # ticks whose individual extents would otherwise be difficult to measure.
+    from matplotlib.patches import Rectangle
+
+    bragg_band_guard = Rectangle(
+        (0.0, band_floor),
+        1.0,
+        data_bottom - band_floor,
+        transform=ax.get_yaxis_transform(),
+        facecolor="none",
+        edgecolor="none",
+        linewidth=0.0,
+    )
+    ax.add_patch(bragg_band_guard)
+    return phase_handles, row_labels, peak_labels, bragg_band_guard
 
 
 def _polish_main_axis(ax: Any, state: ProjectState, spectrum_handles: list[Any], phase_handles: list[Any]) -> None:
@@ -815,7 +810,7 @@ def _polish_main_axis(ax: Any, state: ProjectState, spectrum_handles: list[Any],
         labelleft=show_y_ticks,
     )
     handles = []
-    if settings.show_legend:
+    if settings.show_legend and not settings.direct_labels:
         handles.extend(spectrum_handles)
     if settings.show_phase_legend:
         handles.extend(phase_handles)
@@ -828,15 +823,22 @@ def _polish_main_axis(ax: Any, state: ProjectState, spectrum_handles: list[Any],
             "borderaxespad": 0.35,
         }
         if settings.legend_location == "outside right":
+            wrapped_labels = prepare_side_labels(
+                [handle.get_label() for handle in handles], settings
+            )
             legend_kwargs.update(
                 {
-                    "labels": [_wrap_legend_label(handle.get_label(), settings) for handle in handles],
+                    "labels": wrapped_labels,
                     "loc": "center left",
                     "bbox_to_anchor": (1.02, 0.5),
                 }
             )
         else:
-            legend_kwargs["loc"] = settings.legend_location
+            legend_kwargs["loc"] = (
+                "lower left"
+                if settings.inset_enabled and settings.legend_location == "best"
+                else settings.legend_location
+            )
         legend = ax.legend(**legend_kwargs)
         for text in legend.get_texts():
             text.set_color(PLOT_TEXT_COLOR)
@@ -869,26 +871,17 @@ def _intensity_colorbar_label(settings) -> str:
     return "Intensity"
 
 
-def _layout_right_margin(settings, *, legend=None) -> float:
-    preferred = settings.margin_right
-    if settings.legend_location == "outside right" and legend is not None:
-        figure_width_pt = max(float(settings.figure_width_in) * 72.0, 1.0)
-        text_width_pt = _legend_text_width_points(legend, settings)
-        decoration_width_pt = settings.tick_label_size * (1.6 + 0.5 + 1.0) + 6.0
-        required_fraction = (text_width_pt + decoration_width_pt) / figure_width_pt + 0.015
-        preferred = min(preferred, settings.margin_right - required_fraction)
-    if settings.direct_labels:
-        preferred = min(preferred, 0.84)
-    if settings.show_colorbar and settings.view_mode in {"gradient_stack", "heatmap"}:
-        # Matplotlib creates the colorbar before ``subplots_adjust``.  Reserve
-        # enough right-side canvas for its tick labels and vertical title;
-        # otherwise they are silently clipped from narrow publication figures.
-        preferred = min(preferred, 0.84)
-    return max(settings.margin_left + 0.12, preferred)
-
-
 def _validate_outside_legend_layout(state: ProjectState) -> None:
     settings = state.settings
+    if (
+        settings.direct_labels
+        and settings.show_colorbar
+        and settings.view_mode == "gradient_stack"
+    ):
+        raise ValueError(
+            "Direct curve labels cannot share the publication gutter with a colorbar; "
+            "disable direct labels or the colorbar."
+        )
     if settings.legend_location != "outside right" or settings.view_mode == "heatmap":
         return
     labels: list[str] = []
@@ -901,21 +894,19 @@ def _validate_outside_legend_layout(state: ProjectState) -> None:
         labels.extend(phase.phase or phase.name for phase in state.phases if phase.visible and phase.peaks)
     if not labels:
         return
+    if settings.direct_labels:
+        raise ValueError(
+            "Outside-right legend cannot share the publication gutter with direct "
+            "curve labels; choose an inside phase legend or disable direct labels."
+        )
     if settings.show_colorbar and settings.view_mode == "gradient_stack":
         raise ValueError(
             "Outside-right legend cannot share the publication gutter with a colorbar; "
             "choose an inside legend position or disable the spectrum legend."
         )
 
-    wrapped_labels = [_wrap_legend_label(label, settings) for label in labels]
-    font_size = float(settings.tick_label_size)
-    line_height_pt = font_size * 1.25
-    label_spacing_pt = font_size * 0.5
-    legend_height_pt = sum(
-        max(len(label.splitlines()), 1) * line_height_pt
-        for label in wrapped_labels
-    )
-    legend_height_pt += max(len(wrapped_labels) - 1, 0) * label_spacing_pt + font_size * 0.8
+    wrapped_labels = prepare_side_labels(labels, settings)
+    legend_height_pt = side_label_height_points(wrapped_labels, settings)
     center = (float(settings.margin_bottom) + float(settings.margin_top)) / 2.0
     available_fraction = max(2.0 * min(center, 1.0 - center) - 0.02, 0.0)
     available_height_pt = float(settings.figure_height_in) * 72.0 * available_fraction
@@ -924,56 +915,6 @@ def _validate_outside_legend_layout(state: ProjectState) -> None:
             "Outside-right legend does not fit vertically at the selected figure size; "
             "use a double-column/taller canvas, shorten or sample labels, or choose an inside legend position."
         )
-
-
-def _wrap_legend_label(label: str, settings) -> str:
-    text = str(label)
-    max_width_pt = max(36.0, float(settings.figure_width_in) * 72.0 * 0.24)
-    lines: list[str] = []
-    for paragraph in text.splitlines() or [""]:
-        current = ""
-        for character in paragraph:
-            candidate = current + character
-            if current and _text_width_points(candidate, settings) > max_width_pt:
-                split_at = current.rfind(" ")
-                if split_at > 0:
-                    lines.append(current[:split_at].rstrip())
-                    current = current[split_at + 1 :] + character
-                else:
-                    lines.append(current.rstrip())
-                    current = character.lstrip()
-            else:
-                current = candidate
-        lines.append(current.rstrip())
-    return "\n".join(line for line in lines if line) or text
-
-
-def _legend_text_width_points(legend, settings) -> float:
-    if legend is None:
-        return 0.0
-    return max(
-        (
-            _text_width_points(line, settings)
-            for text in legend.get_texts()
-            for line in text.get_text().splitlines()
-        ),
-        default=0.0,
-    )
-
-
-def _text_width_points(text: str, settings) -> float:
-    if not text:
-        return 0.0
-    try:
-        from matplotlib.font_manager import FontProperties
-        from matplotlib.textpath import TextPath
-
-        properties = FontProperties(family=settings.font_family, size=settings.tick_label_size)
-        return float(TextPath((0.0, 0.0), text, prop=properties).get_extents().width)
-    except (RuntimeError, TypeError, ValueError):
-        return len(text) * float(settings.tick_label_size) * 0.75
-
-
 def _ensure_opaque_raster(path: Path, dpi: int) -> None:
     try:
         from PIL import Image
@@ -998,7 +939,32 @@ def _ensure_opaque_raster(path: Path, dpi: int) -> None:
 
 
 def settings_bragg_fraction(state: ProjectState) -> float:
-    return min(max(state.settings.bragg_band_height, 0.05), 0.45)
+    settings = state.settings
+    phase_count = sum(1 for phase in state.phases if phase.visible and phase.peaks)
+    configured = min(max(settings.bragg_band_height, 0.05), 0.45)
+    if phase_count < 2:
+        return configured
+
+    available_height_points = (
+        float(settings.figure_height_in)
+        * 72.0
+        * max(float(settings.margin_top) - float(settings.margin_bottom), 0.32)
+    )
+    required_band_share = (
+        phase_count
+        * max(float(settings.tick_label_size) * 1.35, 6.5)
+        / max(available_height_points, 1.0)
+    )
+    if required_band_share >= 1.0:
+        required = math.inf
+    else:
+        required = required_band_share * 1.04 / max(1.0 - required_band_share, 1.0e-9)
+    if required > 0.45:
+        raise ValueError(
+            "Phase rows do not fit without overlap at the selected figure height; "
+            "show fewer phases or use a taller canvas."
+        )
+    return max(configured, required)
 
 
 def _visible_spectrum_x_range(state: ProjectState) -> tuple[float, float] | None:

@@ -74,6 +74,8 @@ class ExtendedRendererTests(unittest.TestCase):
         self.addCleanup(figure.clear)
 
         width, height = figure.get_size_inches()
+        self.assertAlmostEqual(width, 4.0, places=6)
+        self.assertAlmostEqual(height, 2.0, places=6)
         self.assertAlmostEqual(width / height, 2.0, places=6)
         self.assertLessEqual(round(width * figure.dpi), 1000)
         self.assertLessEqual(round(height * figure.dpi), 400)

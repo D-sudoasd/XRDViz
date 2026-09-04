@@ -7,6 +7,11 @@ from matplotlib.ticker import MaxNLocator
 
 from xrdviz.batch import matplotlib_colormap
 from xrdviz.models import PLOT_AXIS_COLOR, PLOT_TEXT_COLOR, ProjectState
+from xrdviz.plot.layout import (
+    prepare_panel_title,
+    safe_subplot_margins,
+    set_panel_title,
+)
 
 
 def render_map(state: ProjectState, fig: Any) -> tuple[Any, dict[str, Any]]:
@@ -78,22 +83,20 @@ def render_map(state: ProjectState, fig: Any) -> tuple[Any, dict[str, Any]]:
         colorbar_ax.set_ylabel(intensity_label, color=PLOT_TEXT_COLOR)
         colorbar_ax.tick_params(colors=PLOT_TEXT_COLOR, width=0.55, length=2.5)
 
-    if settings.panel_title:
-        ax.set_title(
-            settings.panel_title,
-            loc="left",
-            fontsize=max(settings.axis_label_size, settings.font_size),
-        )
+    title_artist = set_panel_title(ax, settings.panel_title, settings)
     _polish_axis(ax, settings, polar=polar)
     fig.subplots_adjust(
-        left=settings.margin_left,
-        right=_layout_right_margin(settings, colorbar=colorbar_ax is not None),
-        top=settings.margin_top,
-        bottom=settings.margin_bottom,
+        **safe_subplot_margins(
+            settings,
+            title=prepare_panel_title(settings.panel_title, settings),
+            colorbar=colorbar_ax is not None,
+        ),
     )
     axes: dict[str, Any] = {"main": ax, "map": mesh}
     if colorbar_ax is not None:
         axes["colorbar"] = colorbar_ax
+    if title_artist is not None:
+        axes["panel_title"] = title_artist
     return fig, axes
 
 
@@ -124,19 +127,3 @@ def _compact_locator() -> MaxNLocator:
     """Return a stable major locator for narrow quantitative map panels."""
 
     return MaxNLocator(nbins=4, steps=[1, 2, 2.5, 5, 10], min_n_ticks=3)
-
-
-def _layout_right_margin(settings: Any, *, colorbar: bool) -> float:
-    """Reserve a publication-safe gutter for colorbar decorations.
-
-    ``Figure.colorbar`` creates a sibling axes before the final subplot
-    adjustment.  On an 89 mm canvas, leaving the configured 0.98 right edge
-    lets tick labels and the vertical title extend past the saved canvas.
-    ``0.84`` follows the existing heatmap/gradient layout contract and keeps
-    the colorbar title inside the exported figure at the default font sizes.
-    """
-
-    preferred = float(settings.margin_right)
-    if colorbar:
-        preferred = min(preferred, 0.84)
-    return max(float(settings.margin_left) + 0.12, preferred)
