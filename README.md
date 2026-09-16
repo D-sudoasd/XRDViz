@@ -1,59 +1,76 @@
 # XRDViz
 
-XRDViz is a Python/Qt desktop application for turning one-dimensional spectra, fit results, detector maps, and selected XRD analyses into clear, traceable publication figures.
+**Desktop XRD visualization and evidence-aware publication figures** (v0.2.0)
 
-## Features
+Python / Qt application for turning one-dimensional spectra, fit results, detector maps, and selected XRD analyses into clear, traceable publication figures. Source install only — no Windows EXE is claimed.
 
-- Drag and drop `.txt`, `.csv`, `.xy`, and `.dat` spectrum files.
-- Declare input X axis as `2theta`, `d`, or `q`, then convert all layers through a global energy setting.
-- Display linear, normalized, log, stacked, or log-stacked spectra without mutating raw data.
-- Batch import spectrum folders, infer frame/time/temperature metadata from filenames, sort by metadata, and draw overlay, stack, gradient stack, heatmap, or small-multiple views.
-- Import structured intensity uncertainty and display it as a shaded band or sampled error bars.
-- Add zoom insets, explicit vertical annotations, automatic panel labels, and shared-axis small multiples.
-- Load CIF files and draw Bragg tick marks below the main plot.
-- Import `sample_labels.csv` to control sample labels, order, colors, visibility, and offsets.
-- Import `reference_peaks.csv` or simple Rigaku-style `peaks.csv` files as reference phase markers.
-- Show phase-specific marker symbols, guide lines, direct curve labels, compact phase legends, and a reference peak table.
-- Import observed/calculated fit CSV files and draw observed, calculated, background, component, Bragg, and difference panels with Rp/Rwp values.
-- Fit seeded or prominence-suggested Gaussian, Lorentzian, or pseudo-Voigt components with polynomial backgrounds; retain peak centre, FWHM, area, height, convergence, and residual data.
-- Load raw detector arrays/images, perform explicit flat-detector radial integration, or build a 2theta-chi cake; import complete RSM and pole-figure grids.
-- Build Scherrer size, Williamson-Hall, and rocking-curve plots from explicit CSV contracts.
-- Apply exact 89 mm / 183 mm Nature presets, Science presets, or custom templates with adjustable legend placement, fonts, dimensions, and margins.
-- Pan, zoom, reset, and inspect the live plot with the built-in navigation toolbar.
-- See a permanent Nature preflight status while editing; invalid numeric input leaves the last valid plot visible and reports the field that needs attention.
-- Export line plots as editable PDF/SVG or opaque RGB PNG/TIFF at the configured resolution (600 dpi in the Nature presets).
-- Export a traceable publication bundle with four figure formats, source data for the active advanced analysis, a restorable project snapshot, a report, and a SHA-256 manifest.
+Requires **Python 3.10+**. Entry points: `xrdviz` and `python -m xrdviz`.
+
+## What it does
+
+- Drag-and-drop `.txt`, `.csv`, `.xy`, and `.dat` spectra; declare X as `2theta`, `d`, or `q` and convert layers through a global energy setting.
+- Display linear, normalized, log, stacked, or log-stacked spectra **without mutating raw data**.
+- Batch-import spectrum folders; infer frame / time / temperature from filenames; overlay, stack, gradient stack, heatmap, or small-multiple views.
+- Uncertainty bands or error bars from structured intensity uncertainty.
+- Zoom insets, vertical annotations, panel labels, shared-axis small multiples.
+- CIF Bragg ticks; `sample_labels.csv` for labels / order / colors; `reference_peaks.csv` or Rigaku-style `peaks.csv` markers.
+- Observed / calculated fit CSV panels (observed, calculated, background, components, Bragg, difference) with Rp / Rwp when present.
+- Seeded or prominence-suggested Gaussian / Lorentzian / pseudo-Voigt peak fits with polynomial backgrounds; retain centre, FWHM, area, height, convergence, residuals.
+- Flat-detector radial integration or 2θ–χ cake from raw arrays; import complete RSM and pole-figure grids.
+- Scherrer, Williamson–Hall, and rocking-curve plots from explicit CSV contracts.
+- Nature 89 mm / 183 mm and Science presets (or custom templates); live Nature preflight while editing.
+- Export PDF / SVG (vector where applicable) or PNG / TIFF; optional publication bundle with figures, source CSVs, restorable `project.xrdviz.json`, report, and SHA-256 manifest.
+
+## Install and run
+
+```powershell
+git clone https://github.com/D-sudoasd/XRDViz.git
+cd XRDViz
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
+xrdviz
+# equivalent: python -m xrdviz
+```
+
+Linux / macOS:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+xrdviz
+```
+
+Dependencies (from `pyproject.toml`): NumPy, pandas, SciPy, Matplotlib, Pillow, PySide6, pymatgen. Dev tests: `python -m pip install -e ".[dev]"` then `pytest -q`.
+
+XRDViz is distributed for **source execution**. There is no packaged Windows executable in this repository.
 
 ## Nature-oriented export
 
-The Nature presets use Arial, 5--7 pt typography, restrained line weights, exact 89 mm (single-column) or 183 mm (double-column) widths, and 600 dpi raster output. Quantitative heatmaps and gradients default to the perceptually uniform, color-vision-friendly Cividis map. Mixed Celsius/Kelvin series are compared in Kelvin; a mixed series that combines declared and missing or unknown units fails closed instead of receiving a misleading scale. Missing time or temperature metadata remains missing and is shown as `n/a` or muted gray rather than being replaced by acquisition order.
+Nature presets use Arial, 5–7 pt typography, restrained line weights, exact **89 mm** (single-column) or **183 mm** (double-column) widths, and **600 dpi** raster output. Quantitative heatmaps default to Cividis. Mixed Celsius / Kelvin series are compared in Kelvin; mixed declared + missing units fail closed. Missing time / temperature stays missing (`n/a` or muted gray), never replaced by acquisition order.
 
-For ordinary line plots, PDF and SVG retain vector paths and editable text. Heatmaps and 2D maps necessarily embed raster image content inside PDF/SVG and are therefore reported as combination/raster figures; XRDViz does not label them as all-vector. The in-app preflight checks configuration and visible data, but it is not a guarantee of editorial acceptance. See Nature's current [figure construction and export guide](https://research-figure-guide.nature.com/figures/building-and-exporting-figure-panels/) and the journal's [initial submission guidance](https://www.nature.com/nature/for-authors/initial-submission).
+For ordinary line plots, PDF and SVG keep vector paths and editable text. Heatmaps and 2D maps embed raster content inside PDF / SVG and are reported as combination / raster figures — not labelled all-vector. In-app preflight checks configuration and visible data; it is **not** a guarantee of editorial acceptance. See Nature’s [figure construction guide](https://research-figure-guide.nature.com/figures/building-and-exporting-figure-panels/) and [initial submission guidance](https://www.nature.com/nature/for-authors/initial-submission).
 
-The publication bundle contains:
+Publication bundle contents:
 
-- `<name>.pdf`, `<name>.svg`, `<name>.tiff`, and `<name>.png`
-- `cleaned_xrd_data.csv` and `reference_peak_table.csv`
-- when present: `pattern_fit_data.csv`, `peak_fit_summary.csv`, `map_data.csv`, and/or `derived_analysis_data.csv`
-- `project.xrdviz.json`, which can be reopened in XRDViz
-- `xrd_plot_report.md` and `publication_manifest.json`, including output hashes and source-file status
+- `<name>.pdf`, `.svg`, `.tiff`, `.png`
+- `cleaned_xrd_data.csv`, `reference_peak_table.csv`
+- when present: `pattern_fit_data.csv`, `peak_fit_summary.csv`, `map_data.csv`, `derived_analysis_data.csv`
+- `project.xrdviz.json` (reopenable), `xrd_plot_report.md`, `publication_manifest.json` (hashes and source status)
 
-## Batch and In-situ Workflow
+## Batch / in-situ workflow
 
-Use **File -> Import spectra folder...** for folders of `.txt`, `.csv`, `.xy`, or `.dat` patterns. XRDViz infers metadata from common filename forms such as:
+**File → Import spectra folder…** for folders of `.txt` / `.csv` / `.xy` / `.dat`. Filename forms such as:
 
-- `Az_Full_000123.txt` -> frame `123`
-- `scan_0007_12.5min_650C.xy` -> frame `7`, time `750 s`, temperature `650 C`
+- `Az_Full_000123.txt` → frame `123`
+- `scan_0007_12.5min_650C.xy` → frame `7`, time `750 s`, temperature `650 °C`
 
-The **Batch** tab controls:
+The **Batch** tab controls view mode (overlay, stack, gradient stack, heatmap, small multiples, fit/residual, 2D map, derived analysis), sort/color fields, colormap, and sampling. The publication report records batch settings and inferred metadata. Heatmap row labels stay readable (sparsified; first and last frames always included).
 
-- view mode: overlay, stack, gradient stack, heatmap, small multiples, fit/residual, 2D map, or derived analysis
-- sort/color fields: frame, time, temperature, or current order
-- colormap, colorbar, show every N spectra, and heatmap sampling points
-
-The publication bundle report records these batch settings and each spectrum's inferred metadata. Heatmap row labels are always shown, sparsified to a readable set for long series, and include the first and last frame.
-
-## CSV Helpers
+## CSV helpers
 
 `sample_labels.csv`:
 
@@ -71,52 +88,42 @@ position,label,phase,intensity,hkl,source_axis,color,shape
 2.5,d peak,Calcite,40,110,d,#2B9C8F,square
 ```
 
-`source_axis` accepts `two_theta`, `d`, or `q`; peaks are converted to the current plot axis using the global energy setting.
+`source_axis` accepts `two_theta`, `d`, or `q`; peaks convert to the current plot axis via the global energy setting.
 
-Observed/calculated fit data use a header row. The x column may be `x`, `2theta`, `d`, or `q`; `observed` and `calculated` are required. `sigma`, `background`, and any `component_<name>` or `peak_<name>` columns are optional:
+Observed / calculated fit CSVs need a header; x may be `x`, `2theta`, `d`, or `q`; `observed` and `calculated` are required. Optional: `sigma`, `background`, `component_<name>`, `peak_<name>`.
 
-```csv
-2theta,observed,calculated,sigma,background,component_alpha
-20,100,98,3,12,86
-21,180,176,4,13,163
-22,110,113,3,12,101
+Peak-width analyses need explicit degree-based positions and widths (`2theta`, `FWHM`, …). Rocking curves: `omega,intensity`. RSM / pole figures: complete regular long-form grids (`qx,qz,intensity` or `phi,chi,intensity`); every coordinate pair exactly once.
+
+## Scientific boundary
+
+| In scope | Out of scope |
+| --- | --- |
+| Traceable plotting and publication export | Database Search/Match |
+| Bounded peak decomposition for summaries | Rietveld / Pawley / Le Bail solvers |
+| Flat untilted detector radial / cake preview | Distortion, polarization, solid-angle, or full instrument calibration |
+| Declared RSM / pole-figure grids | Raw goniometer → reciprocal transforms, ODF, texture mechanism claims |
+| Scherrer / W–H with user wavelength, shape factor, instrument broadening | Invented uncertainty when none is supplied |
+| Fit importer for **external** obs/calc results | Quantitative phase fractions / automated QPA |
+
+Detector preview assumptions are stored in the project / report and flagged by publication preflight. Suggested peak seeds are not phase identification.
+
+## Package names
+
+| Shown name | Machine name |
+| --- | --- |
+| XRDViz | PyPI / project: `xrdviz` |
+| | Import: `xrdviz` |
+| | CLI: `xrdviz` |
+
+## Development
+
+```bash
+python -m pip install -e ".[dev]"
+pytest -q
 ```
 
-Peak-width analyses require explicit degree-based positions and widths:
+Repository: [github.com/D-sudoasd/XRDViz](https://github.com/D-sudoasd/XRDViz). Issues welcome for reproducible bugs and focused feature proposals.
 
-```csv
-2theta,FWHM,hkl,intensity
-35.1,0.20,111,100
-50.3,0.24,200,72
-63.0,0.29,220,48
-```
+## License
 
-Rocking curves require `omega,intensity`. RSM and pole-figure imports use complete, regular long-form grids; every coordinate pair must appear exactly once:
-
-```csv
-qx,qz,intensity
-0.0,1.0,120
-0.1,1.0,135
-0.0,1.1,98
-0.1,1.1,111
-```
-
-For a pole figure, use `phi,chi,intensity` instead.
-
-## Advanced Analysis Boundaries
-
-- The fit importer presents external observed/calculated results. It is not a Rietveld, Pawley, or Le Bail solver.
-- Peak decomposition is a bounded profile fit for plotting and peak summaries; suggested seeds are not phase identification.
-- Detector radial/cake processing is an explicit flat, untilted preview. It does not invent distortion, polarization, solid-angle, or instrument-calibration corrections; the preview assumptions are stored in the project/report and flagged by publication preflight.
-- RSM and pole-figure workflows render already-declared reciprocal/angle coordinates. They do not transform raw goniometer scans, calculate an ODF, or claim a texture mechanism.
-- Scherrer and Williamson-Hall results require explicit wavelength, shape factor, and instrument broadening. They do not report uncertainty unless independently supplied.
-- Database Search/Match, quantitative phase analysis, and automated phase fractions are outside the current scope.
-
-## Run
-
-```powershell
-py -3.12 -m pip install -e .
-py -3.12 -m xrdviz
-```
-
-XRDViz is currently distributed for source execution rather than as a Windows executable.
+No `LICENSE` file is present in this checkout. Do not assume MIT or any other terms until a license is added to the repository.
