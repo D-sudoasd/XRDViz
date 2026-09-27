@@ -1,5 +1,9 @@
 # XRDViz
 
+> **已归档 / Archived — 2026-09-27**：本项目已停止使用和维护，保留源码与历史记录供查阅。详见 [归档说明 / Archive notice](ARCHIVED.md)。
+>
+> This project is retired and no longer maintained. Source code and Git history are retained for reference.
+
 **Desktop XRD visualization and evidence-aware publication figures** (v0.2.0)
 
 Python / Qt application for turning one-dimensional spectra, fit results, detector maps, and selected XRD analyses into clear, traceable publication figures. Source install only — no Windows EXE is claimed.
