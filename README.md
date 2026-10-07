@@ -8,14 +8,12 @@ A Python / Qt desktop application for plotting diffraction data, comparing spect
 
 [源码安装](#install-and-run) · [批量 / 原位序列](#batch--in-situ-workflow) · [CSV 输入](#csv-helpers) · [图件导出](#nature-oriented-export) · [科学范围](#scientific-boundary)
 
-```mermaid
-flowchart TD
-  A[谱线、外部拟合 CSV 或规则网格] --> B[声明横轴、能量与元数据]
-  B --> C[叠加、堆叠、热图或残差视图]
-  C --> D[检查布局与图件预检]
-  D --> E[PDF / SVG / PNG / TIFF]
-  D --> F[源表、工程 JSON、报告与哈希清单]
-```
+<picture>
+  <source media="(max-width: 600px)" srcset="assets/readme/diagrams/workflow-readme-md-1-mobile.svg">
+  <img src="assets/readme/diagrams/workflow-readme-md-1.svg" width="100%" alt="XRDViz — workflow schematic / 流程示意图">
+</picture>
+
+<sub>[Editable diagram source / 可编辑图源](assets/readme/diagrams/workflow-readme-md-1.mmd)</sub>
 
 **历史输入示例：** `scan_0007_12.5min_650C.xy` 可提供帧号、时间和温度元数据；缺失信息保持缺失。线图可导出矢量路径和文本，二维图内容可包含栅格数据。需要 Python 3.10+，仅提供源码运行方式。仓库没有独立 LICENSE 文件。
 
