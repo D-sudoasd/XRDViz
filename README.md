@@ -17,6 +17,18 @@ A Python / Qt desktop application for plotting diffraction data, comparing spect
 
 **历史输入示例：** `scan_0007_12.5min_650C.xy` 可提供帧号、时间和温度元数据；缺失信息保持缺失。线图可导出矢量路径和文本，二维图内容可包含栅格数据。需要 Python 3.10+，仅提供源码运行方式。仓库没有独立 LICENSE 文件。
 
+## 原理示意 / Principle schematic
+
+<p align="center">
+  <img src="assets/readme/principle.png" width="100%" alt="Figure bundle links spectra, plotting views, source tables and project settings — conceptual schematic / 概念示意图">
+</p>
+
+*谱线序列可用叠加、堆叠和二维强度图查看；导出图件与来源表、可重开项目及清单共同保存。概念示意，非实验曲线或真实软件界面。*
+
+*Spectral series support overlay, stacked and heatmap views; exported figures stay linked to source tables, reopenable project settings and a manifest. Conceptual schematic, not experimental curves or an actual interface.*
+
+[查看完整示意图 / View full-size schematic](assets/readme/principle.png)
+
 ## What it does
 
 - Drag-and-drop `.txt`, `.csv`, `.xy`, and `.dat` spectra; declare X as `2theta`, `d`, or `q` and convert layers through a global energy setting.
