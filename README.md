@@ -1,14 +1,23 @@
 # XRDViz
 
-> **已归档 / Archived — 2026-09-27**：本项目已停止使用和维护，保留源码与历史记录供查阅。详见 [归档说明 / Archive notice](ARCHIVED.md)。
->
-> This project is retired and no longer maintained. Source code and Git history are retained for reference.
+**将谱线、外部拟合结果与规则二维网格，整理成带来源记录的 XRD 图件。**
 
-**Desktop XRD visualization and evidence-aware publication figures** (v0.2.0)
+A Python / Qt desktop application for plotting diffraction data, comparing spectra, and exporting figures with source tables and restorable project settings.
 
-Python / Qt application for turning one-dimensional spectra, fit results, detector maps, and selected XRD analyses into clear, traceable publication figures. Source install only — no Windows EXE is claimed.
+> **Retired and archived / 已停止使用并归档（2026-09-27）。** 源码和历史记录供查阅，不再维护；详见 [归档说明](ARCHIVED.md)。下方安装和使用描述适用于保留的历史实现。
 
-Requires **Python 3.10+**. Entry points: `xrdviz` and `python -m xrdviz`.
+[源码安装](#install-and-run) · [批量 / 原位序列](#batch--in-situ-workflow) · [CSV 输入](#csv-helpers) · [图件导出](#nature-oriented-export) · [科学范围](#scientific-boundary)
+
+```mermaid
+flowchart TD
+  A[谱线、外部拟合 CSV 或规则网格] --> B[声明横轴、能量与元数据]
+  B --> C[叠加、堆叠、热图或残差视图]
+  C --> D[检查布局与图件预检]
+  D --> E[PDF / SVG / PNG / TIFF]
+  D --> F[源表、工程 JSON、报告与哈希清单]
+```
+
+**历史输入示例：** `scan_0007_12.5min_650C.xy` 可提供帧号、时间和温度元数据；缺失信息保持缺失。线图可导出矢量路径和文本，二维图内容可包含栅格数据。需要 Python 3.10+，仅提供源码运行方式。仓库没有独立 LICENSE 文件。
 
 ## What it does
 
